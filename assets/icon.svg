@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Dispatch portal icon">
+  <defs>
+    <linearGradient id="bg" x1="104" y1="56" x2="424" y2="472" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#07131f"/>
+      <stop offset=".52" stop-color="#13172f"/>
+      <stop offset="1" stop-color="#24153f"/>
+    </linearGradient>
+    <linearGradient id="portal" x1="130" y1="162" x2="398" y2="348" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7df9ff"/>
+      <stop offset=".46" stop-color="#39c6ff"/>
+      <stop offset="1" stop-color="#c08cff"/>
+    </linearGradient>
+    <radialGradient id="void" cx="50%" cy="50%" r="50%">
+      <stop offset="0" stop-color="#05070f"/>
+      <stop offset=".72" stop-color="#081021"/>
+      <stop offset="1" stop-color="#142545"/>
+    </radialGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="14" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect x="38" y="38" width="436" height="436" rx="112" fill="url(#bg)"/>
+  <path d="M164 376c-53-39-76-97-59-149 23-69 111-101 196-72 85 28 136 107 113 176-22 69-110 101-196 72-19-6-37-16-54-27Z" fill="#111a32" opacity=".72"/>
+  <g transform="rotate(-18 256 258)" filter="url(#glow)">
+    <ellipse cx="256" cy="258" rx="143" ry="86" fill="url(#void)" stroke="#7df9ff" stroke-width="28" opacity=".28"/>
+    <ellipse cx="256" cy="258" rx="143" ry="86" fill="none" stroke="url(#portal)" stroke-width="22" stroke-linecap="round"/>
+    <ellipse cx="256" cy="258" rx="101" ry="51" fill="#05070f" stroke="#293e66" stroke-width="6"/>
+  </g>
+  <g fill="#e9fbff">
+    <circle cx="157" cy="216" r="13"/>
+    <circle cx="317" cy="159" r="10"/>
+    <circle cx="379" cy="297" r="12"/>
+  </g>
+  <g fill="none" stroke="#f4e9ff" stroke-linecap="round" stroke-width="10" opacity=".86">
+    <path d="M151 101v34"/>
+    <path d="M134 118h34"/>
+    <path d="M387 381v28"/>
+    <path d="M373 395h28"/>
+  </g>
+</svg>
