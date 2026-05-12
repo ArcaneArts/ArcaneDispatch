@@ -32,5 +32,11 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSLocationUsageDescription</key>
+	<string>Arcane Dispatch reads your Wi-Fi network name so it can show "Wi-Fi — Hometown" instead of a generic "Wi-Fi" label. Granting this permission only enables the SSID readback — no location data leaves your Mac.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Arcane Dispatch reads your Wi-Fi network name so it can show "Wi-Fi — Hometown" instead of a generic "Wi-Fi" label. Granting this permission only enables the SSID readback — no location data leaves your Mac.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Arcane Dispatch reads your Wi-Fi network name so it can show "Wi-Fi — Hometown" instead of a generic "Wi-Fi" label. Granting this permission only enables the SSID readback — no location data leaves your Mac.</string>
 </dict>
 </plist>

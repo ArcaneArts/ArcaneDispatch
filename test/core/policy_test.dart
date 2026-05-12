@@ -243,9 +243,14 @@ void main() {
       DispatchSettings s = DispatchSettings.load(box);
       expect(s.listenHost, '127.0.0.1');
       expect(s.listenPort, 1080);
-      expect(s.transportKind, TransportKind.socks);
+      // System-wide tunnel is now the default — the product is meant
+      // to behave like Speedify (covers every app on the machine) out
+      // of the box.
+      expect(s.transportKind, TransportKind.tunnel);
       expect(s.links, isEmpty);
-      expect(s.policy.mode, BondingMode.speed);
+      // Default bonding mode is streaming so realtime traffic gets the
+      // low-latency lane while bulk transfers still bond across links.
+      expect(s.policy.mode, BondingMode.streaming);
       expect(s.policy.links, isEmpty);
     });
 
@@ -311,10 +316,11 @@ void main() {
     test('TransportKindCodec parses unknown strings to fallback', () {
       expect(TransportKindCodec.parse('socks'), TransportKind.socks);
       expect(TransportKindCodec.parse('tunnel'), TransportKind.tunnel);
-      expect(TransportKindCodec.parse('bogus'), TransportKind.socks);
+      // Default fallback is the system-wide tunnel now.
+      expect(TransportKindCodec.parse('bogus'), TransportKind.tunnel);
       expect(
-        TransportKindCodec.parse(null, fallback: TransportKind.tunnel),
-        TransportKind.tunnel,
+        TransportKindCodec.parse(null, fallback: TransportKind.socks),
+        TransportKind.socks,
       );
     });
   });

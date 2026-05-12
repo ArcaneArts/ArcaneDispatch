@@ -69,7 +69,7 @@ extension TransportKindCodec on TransportKind {
 
   static TransportKind parse(
     Object? value, {
-    TransportKind fallback = TransportKind.socks,
+    TransportKind fallback = TransportKind.tunnel,
   }) {
     if (value is TransportKind) {
       return value;
@@ -133,6 +133,16 @@ abstract class Transport {
   /// Push a policy update without restarting. Phase 1 may simply restart;
   /// later phases hot-apply changes.
   Future<void> updatePolicy(Policy policy);
+
+  /// Per-link bytes carried since the start of each link's current billing
+  /// cycle. Powers the "Total data used" surface in the Activity tab and the
+  /// per-network usage chip on each card.
+  ///
+  /// Returns an empty map for transports that don't keep their own counters
+  /// (e.g. the macOS Tunnel implementation, which gets fed an aggregate
+  /// number from the extension's flow stats reader on a separate channel).
+  /// Counters survive process restarts via the data meter's Hive storage.
+  Map<String, int> dataUsedSnapshot() => const <String, int>{};
 
   /// Release all resources. The transport must not be used after dispose.
   Future<void> dispose();

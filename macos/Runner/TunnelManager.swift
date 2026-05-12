@@ -23,7 +23,6 @@ import FlutterMacOS
 import NetworkExtension
 import OSLog
 import Security
-import SystemExtensions
 
 /// Public method names on the `dispatch_tunnel` channel. Kept in this file so
 /// adding a new RPC is a one-stop edit (Swift + Dart mirror in
@@ -53,6 +52,11 @@ private enum TunnelMethod {
     /// `startTunnel` calls can hand it to the extension via the App
     /// Group container. Pass empty to clear.
     static let setResponderPublicKey = "setResponderPublicKey"
+    /// Asks the extension to drain its per-link byte counters since the
+    /// previous call. Returns a JSON array of `{linkId, bytesIn,
+    /// bytesOut}` objects. The Dart side polls this on a timer to drive
+    /// the bond graphic's particle flow and per-link throughput chips.
+    static let getThroughput = "getThroughput"
 }
 
 /// Tunnel status emitted to Dart. Mirror of `lib/bridge/tunnel_channel.dart::TunnelStatusKind`.
@@ -104,24 +108,37 @@ private enum TunnelStatus: String {
         case TunnelMethod.installExtension:
             installExtension(result: result)
         case TunnelMethod.startTunnel:
-            // Optional policyJson; if present we write it before bringing the
-            // tunnel up so the extension reads the latest snapshot.
+            // Optional policyJson; if present we stash it on the VPN
+            // configuration (`providerConfiguration`) AND write it to the
+            // App Group container if entitled. The configuration dict
+            // travels with the VPN profile so the extension always has a
+            // policy even when App Groups isn't available — see
+            // `loadOrCreateManager` for the wire-up.
+            let pendingPolicyJson: String?
             if let args = call.arguments as? [String: Any],
                let json = args["policyJson"] as? String {
+                pendingPolicyJson = json
                 _ = writePolicy(jsonString: json)
+            } else {
+                pendingPolicyJson = nil
             }
-            startTunnel(result: result)
+            startTunnel(policyJson: pendingPolicyJson, result: result)
         case TunnelMethod.stopTunnel:
             stopTunnel(result: result)
         case TunnelMethod.reloadPolicy:
-            if let args = call.arguments as? [String: Any],
-               let json = args["policyJson"] as? String,
-               !writePolicy(jsonString: json) {
-                result(FlutterError(code: "policy_write_failed",
-                                    message: "Failed to write policy.json", details: nil))
+            // Always carry the JSON inline so the extension can hot-reload
+            // even without an App Group container. We still attempt the
+            // App Group write so a re-launched extension reads the same
+            // snapshot via PolicyStore as a defence-in-depth fallback.
+            guard let args = call.arguments as? [String: Any],
+                  let json = args["policyJson"] as? String else {
+                result(FlutterError(code: "bad_args",
+                                    message: "policyJson required",
+                                    details: nil))
                 return
             }
-            sendReloadMessage(result: result)
+            _ = writePolicy(jsonString: json) // best-effort
+            sendReloadMessage(policyJson: json, result: result)
         case TunnelMethod.writePolicy:
             guard let args = call.arguments as? [String: Any],
                   let json = args["policyJson"] as? String else {
@@ -178,37 +195,46 @@ private enum TunnelStatus: String {
                 result(FlutterError(code: "keychain_failed",
                                     message: error.localizedDescription, details: nil))
             }
+        case TunnelMethod.getThroughput:
+            getThroughput(result: result)
         default:
             result(FlutterMethodNotImplemented)
         }
     }
 
-    // MARK: - System Extension lifecycle
+    // MARK: - Extension activation
 
-    /// Submit an OSSystemExtensionRequest to install or refresh our packaged
-    /// `.appex`. The user will see a "System Extension Blocked" dialog the
-    /// first time, requiring approval in System Settings → Privacy & Security.
+    /// Confirm the bundled Packet Tunnel Provider is reachable.
+    ///
+    /// We ship the extension as an **App Extension** (`.appex` embedded in
+    /// `Contents/PlugIns/`), not a System Extension (`.systemextension`).
+    /// macOS auto-discovers app extensions when the host app is launched —
+    /// there's no separate activation request. The VPN-configuration
+    /// approval sheet appears later, when we first call
+    /// `NETunnelProviderManager.saveToPreferences`.
+    ///
+    /// `OSSystemExtensionRequest` only works for `.systemextension` bundles
+    /// and would hang forever waiting for an approval that the OS never
+    /// surfaces for app-extension packaging — that's the bug behind the
+    /// "stuck on Starting system-wide tunnel…" state.
     private func installExtension(result: @escaping FlutterResult) {
-        let request = OSSystemExtensionRequest.activationRequest(
-            forExtensionWithIdentifier: extensionBundleId,
-            queue: .main
-        )
-        let delegate = SystemExtensionRequestDelegate(log: log) { [weak self] outcome in
-            switch outcome {
-            case .ok:
-                self?.log.info("System Extension activation OK")
-                result(true)
-            case .needsApproval:
-                self?.log.info("System Extension awaiting user approval")
-                result(["pending": true])
-            case .failure(let message):
-                self?.lastError = message
-                result(FlutterError(code: "sysext_failed", message: message, details: nil))
-            }
+        let bundle = Bundle.main
+        let plugInsURL = bundle.builtInPlugInsURL
+        let expectedPath = plugInsURL?
+            .appendingPathComponent("ArcaneDispatchTunnel.appex").path ?? "<unknown>"
+        let present = FileManager.default.fileExists(atPath: expectedPath)
+        log.info("installExtension: app-extension packaging — appex at \(expectedPath), present=\(present)")
+        if !present {
+            lastError = "Bundled Network Extension is missing at \(expectedPath). " +
+                "Re-build with `flutter build macos` so the .appex is embedded."
+            result(FlutterError(code: "appex_missing",
+                                message: lastError, details: nil))
+            return
         }
-        // Delegate is retained by the request until completion.
-        request.delegate = delegate
-        OSSystemExtensionManager.shared.submitRequest(request)
+        // Clear any stale error so the UI doesn't keep showing a previous
+        // failure once the user re-tries.
+        lastError = nil
+        result(true)
     }
 
     // MARK: - VPN configuration + connect
@@ -216,30 +242,45 @@ private enum TunnelStatus: String {
     /// Idempotently load (or create) our `NETunnelProviderManager` and start
     /// the tunnel. The user may see a "ArcaneDispatch wants to add VPN
     /// configurations" sheet on first run.
-    private func startTunnel(result: @escaping FlutterResult) {
-        loadOrCreateManager { [weak self] manager, error in
+    ///
+    /// `policyJson` is stashed on `NETunnelProviderProtocol.providerConfiguration`
+    /// before `saveToPreferences` so the extension receives the snapshot even
+    /// without an App Group container. When omitted, the previously-saved
+    /// configuration is reused as-is.
+    private func startTunnel(policyJson: String?, result: @escaping FlutterResult) {
+        log.info("startTunnel: loading/creating NETunnelProviderManager (policy=\(policyJson != nil ? "fresh" : "reuse"))")
+        loadOrCreateManager(policyJson: policyJson) { [weak self] manager, error in
             guard let self else { return }
             if let error = error {
+                self.lastError = error.localizedDescription
                 self.log.error("startTunnel/loadOrCreate failed: \(error.localizedDescription)")
                 result(FlutterError(code: "vpn_load_failed",
                                     message: error.localizedDescription, details: nil))
                 return
             }
             guard let manager = manager else {
+                self.lastError = "No NETunnelProviderManager"
                 result(FlutterError(code: "vpn_load_failed",
                                     message: "No NETunnelProviderManager", details: nil))
                 return
             }
             manager.isEnabled = true
+            // First save triggers the "ArcaneDispatch wants to add VPN
+            // configurations" approval sheet. On subsequent saves the
+            // call is silent.
+            self.log.info("startTunnel: saveToPreferences (may show VPN-config dialog)")
             manager.saveToPreferences { saveError in
                 if let saveError = saveError {
+                    self.lastError = saveError.localizedDescription
                     self.log.error("startTunnel/save failed: \(saveError.localizedDescription)")
                     result(FlutterError(code: "vpn_save_failed",
                                         message: saveError.localizedDescription, details: nil))
                     return
                 }
+                self.log.info("startTunnel: saveToPreferences OK; reloading")
                 manager.loadFromPreferences { loadError in
                     if let loadError = loadError {
+                        self.lastError = loadError.localizedDescription
                         self.log.error("startTunnel/reload failed: \(loadError.localizedDescription)")
                         result(FlutterError(code: "vpn_reload_failed",
                                             message: loadError.localizedDescription, details: nil))
@@ -247,9 +288,11 @@ private enum TunnelStatus: String {
                     }
                     do {
                         try manager.connection.startVPNTunnel()
-                        self.log.info("startTunnel: VPN tunnel start requested")
+                        self.lastError = nil
+                        self.log.info("startTunnel: startVPNTunnel requested OK")
                         result(true)
                     } catch {
+                        self.lastError = error.localizedDescription
                         self.log.error("startTunnel/connect failed: \(error.localizedDescription)")
                         result(FlutterError(code: "vpn_connect_failed",
                                             message: error.localizedDescription, details: nil))
@@ -269,27 +312,108 @@ private enum TunnelStatus: String {
         result(true)
     }
 
+    /// Synchronously requests tunnel shutdown and waits (up to a ceiling)
+    /// for the OS to actually disconnect before calling [completion].
+    /// Used by [AppDelegate.applicationShouldTerminate] so the user doesn't
+    /// lose internet for several seconds after quitting the app.
+    ///
+    /// Implementation details:
+    ///   * We load the manager fresh from preferences (the cached `manager`
+    ///     may be nil if the app never started a tunnel itself but a prior
+    ///     instance left one running).
+    ///   * We poll `connection.status` so we can return as soon as the OS
+    ///     confirms the route is down, rather than always waiting the full
+    ///     ceiling.
+    ///   * The ceiling is 2 seconds — long enough for a healthy stop on
+    ///     normal hardware, short enough that the user doesn't experience
+    ///     "the app is stuck quitting."
+    @objc public func stopBeforeQuit(completion: @escaping () -> Void) {
+        let ceiling: TimeInterval = 2.0
+        let pollInterval: TimeInterval = 0.05
+        let start = Date()
+
+        NETunnelProviderManager.loadAllFromPreferences { [weak self] mgrs, _ in
+            guard let self else { completion(); return }
+            // Pick whichever manager actually owns our extension. There
+            // should only ever be one, but be defensive.
+            let mine = mgrs?.first { mgr in
+                (mgr.protocolConfiguration as? NETunnelProviderProtocol)?
+                    .providerBundleIdentifier == self.extensionBundleId
+            }
+            guard let mgr = mine else {
+                self.log.info("stopBeforeQuit: no tunnel installed; nothing to stop")
+                completion()
+                return
+            }
+            let state = mgr.connection.status
+            if state == .disconnected || state == .invalid {
+                self.log.info("stopBeforeQuit: already \(String(describing: state)); skipping stop")
+                completion()
+                return
+            }
+            self.log.info("stopBeforeQuit: requesting stop (state=\(String(describing: state)))")
+            mgr.connection.stopVPNTunnel()
+
+            // Poll the connection state until it's down or we hit the ceiling.
+            func poll() {
+                let elapsed = Date().timeIntervalSince(start)
+                let now = mgr.connection.status
+                if now == .disconnected || now == .invalid || elapsed >= ceiling {
+                    self.log.info(
+                        "stopBeforeQuit: settled (state=\(String(describing: now)), \(String(format: "%.2f", elapsed))s)")
+                    completion()
+                    return
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + pollInterval) {
+                    poll()
+                }
+            }
+            poll()
+        }
+    }
+
     /// Resolve our manager (loading the existing one if any, otherwise
     /// creating a fresh `NETunnelProviderProtocol`).
+    ///
+    /// When `policyJson` is supplied we copy it into
+    /// `proto.providerConfiguration["policy"]` so the running extension
+    /// receives the snapshot via its `protocolConfiguration` (the standard
+    /// NE pattern when App Groups isn't available). Re-setting this dict
+    /// on every save is harmless — `saveToPreferences` is a no-op when
+    /// nothing changed.
     private func loadOrCreateManager(
+        policyJson: String?,
         _ completion: @escaping (NETunnelProviderManager?, Error?) -> Void
     ) {
         NETunnelProviderManager.loadAllFromPreferences { [weak self] managers, error in
             guard let self else { return }
             if let error = error {
+                self.log.error("loadOrCreate: loadAll failed: \(error.localizedDescription)")
                 completion(nil, error); return
             }
             let existing = managers?.first { manager in
                 (manager.protocolConfiguration as? NETunnelProviderProtocol)?
                     .providerBundleIdentifier == self.extensionBundleId
             }
+            self.log.info("loadOrCreate: \(managers?.count ?? 0) configurations, existing=\(existing != nil)")
             let mgr = existing ?? NETunnelProviderManager()
             let proto = (mgr.protocolConfiguration as? NETunnelProviderProtocol)
                 ?? NETunnelProviderProtocol()
             proto.providerBundleIdentifier = self.extensionBundleId
             proto.serverAddress = "127.0.0.1" // unused for this provider
+            // Plumb the policy snapshot through providerConfiguration so the
+            // extension receives it without needing App Group access. The
+            // existing dict is preserved on re-saves; only the `policy`
+            // entry is replaced when a fresh snapshot is supplied.
+            if let json = policyJson {
+                var cfg = proto.providerConfiguration ?? [:]
+                cfg["policy"] = json
+                proto.providerConfiguration = cfg
+                self.log.info("loadOrCreate: stashed \(json.utf8.count)-byte policy on providerConfiguration")
+            }
             mgr.protocolConfiguration = proto
             mgr.localizedDescription = "Arcane Dispatch"
+            mgr.isEnabled = true
             self.manager = mgr
             completion(mgr, nil)
         }
@@ -327,14 +451,17 @@ private enum TunnelStatus: String {
         }
     }
 
-    /// Send a `reloadPolicy` message to the running extension. No-op when the
+    /// Send a `reloadPolicy` message to the running extension. The optional
+    /// `policyJson` payload is carried in-band so the extension can hot-load
+    /// the snapshot without needing an App Group container. No-op when the
     /// tunnel isn't connected; the extension picks up the new policy on its
-    /// next startTunnel anyway.
-    private func sendReloadMessage(result: @escaping FlutterResult) {
+    /// next startTunnel anyway (which we re-save with the latest
+    /// `providerConfiguration["policy"]`).
+    private func sendReloadMessage(policyJson: String?, result: @escaping FlutterResult) {
         guard let session = manager?.connection as? NETunnelProviderSession else {
             result(false); return
         }
-        let payload = TunnelMessage(kind: .reloadPolicy)
+        let payload = TunnelMessage(kind: .reloadPolicy, policyJson: policyJson)
         guard let data = try? JSONEncoder().encode(payload) else {
             result(FlutterError(code: "encode_failed",
                                 message: "Could not encode reloadPolicy", details: nil))
@@ -352,13 +479,52 @@ private enum TunnelStatus: String {
 
     // MARK: - Status
 
+    /// Drain the running extension's per-link byte counters. Returns an
+    /// empty list when the tunnel isn't connected (the Dart side just
+    /// emits zero deltas, which is what the UI expects when running but
+    /// idle). The extension answers in JSON over `sendProviderMessage`
+    /// — we decode and re-emit as a `[[String: Any]]` so the Flutter
+    /// channel can serialise it without an extra hop through Data.
+    private func getThroughput(result: @escaping FlutterResult) {
+        guard let session = manager?.connection as? NETunnelProviderSession else {
+            result([[String: Any]]())
+            return
+        }
+        let payload = TunnelMessage(kind: .getThroughput, policyJson: nil)
+        guard let data = try? JSONEncoder().encode(payload) else {
+            result([[String: Any]]())
+            return
+        }
+        do {
+            try session.sendProviderMessage(data) { response in
+                guard let response = response,
+                      let parsed = try? JSONSerialization.jsonObject(
+                        with: response, options: []) as? [[String: Any]] else {
+                    result([[String: Any]]())
+                    return
+                }
+                result(parsed)
+            }
+        } catch {
+            result([[String: Any]]())
+        }
+    }
+
     private func currentStatusPayload() -> [String: Any] {
         let kind: TunnelStatus
         if manager == nil {
+            // We haven't created/loaded our config yet (no startTunnel
+            // since launch). Report stopped — the host app's start
+            // button is the canonical trigger that creates the manager.
             kind = .stopped
         } else {
             switch manager?.connection.status ?? .invalid {
-            case .invalid:       kind = .extensionMissing
+            // `.invalid` on app-extension-packaged providers means the
+            // OS hasn't loaded our manager yet, not that the extension
+            // is missing (the .appex is embedded). Treat as stopped so
+            // the UI doesn't show a misleading "extension missing"
+            // sheet on the first poll.
+            case .invalid:       kind = .stopped
             case .disconnected:  kind = .stopped
             case .connecting:    kind = .starting
             case .connected:     kind = .connected
@@ -564,9 +730,22 @@ private struct TunnelMessage: Codable {
     enum Kind: String, Codable {
         case reloadPolicy
         case ping
+        /// Drain per-link byte counters from the extension. The reply
+        /// is JSON `[{linkId, bytesIn, bytesOut}]` — see
+        /// `PacketTunnelProvider.handleAppMessage(.getThroughput)`.
+        case getThroughput
     }
 
     let kind: Kind
+    /// Optional inline policy JSON for `reloadPolicy` so the extension can
+    /// hot-load without reading the App Group container. Nil for other
+    /// message kinds and back-compat with older container builds.
+    let policyJson: String?
+
+    init(kind: Kind, policyJson: String? = nil) {
+        self.kind = kind
+        self.policyJson = policyJson
+    }
 }
 
 /// Persisted Speed Server credentials. Mirror of the Dart
@@ -578,61 +757,11 @@ private struct ServerConfig: Codable {
     let token: String
 }
 
-private enum SystemExtensionOutcome {
-    case ok
-    case needsApproval
-    case failure(String)
-}
+// Note: the OSSystemExtensionRequestDelegate plumbing that used to live here
+// has been removed. The Packet Tunnel Provider is packaged as an App
+// Extension (.appex embedded in Contents/PlugIns/), which macOS
+// auto-discovers — no `OSSystemExtensionRequest` round-trip required. If we
+// ever migrate to a System Extension (.systemextension), the delegate +
+// `SystemExtensionOutcome` enum will need to come back along with the
+// activation request in `installExtension`.
 
-/// Handles the OSSystemExtensionRequestDelegate callbacks. Held alive by the
-/// request itself; we capture the completion closure so the channel result
-/// fires exactly once.
-private final class SystemExtensionRequestDelegate: NSObject, OSSystemExtensionRequestDelegate {
-    private let log: Logger
-    private let onComplete: (SystemExtensionOutcome) -> Void
-    private var fired = false
-
-    init(log: Logger, onComplete: @escaping (SystemExtensionOutcome) -> Void) {
-        self.log = log
-        self.onComplete = onComplete
-    }
-
-    func request(
-        _ request: OSSystemExtensionRequest,
-        actionForReplacingExtension existing: OSSystemExtensionProperties,
-        withExtension ext: OSSystemExtensionProperties
-    ) -> OSSystemExtensionRequest.ReplacementAction {
-        log.info("Replacing system extension \(existing.bundleVersion) -> \(ext.bundleVersion)")
-        return .replace
-    }
-
-    func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
-        log.info("System extension needs user approval (System Settings → Privacy & Security)")
-        fire(.needsApproval)
-    }
-
-    func request(
-        _ request: OSSystemExtensionRequest,
-        didFinishWithResult result: OSSystemExtensionRequest.Result
-    ) {
-        switch result {
-        case .completed:
-            fire(.ok)
-        case .willCompleteAfterReboot:
-            fire(.needsApproval)
-        @unknown default:
-            fire(.failure("Unknown OSSystemExtensionRequest result"))
-        }
-    }
-
-    func request(_ request: OSSystemExtensionRequest, didFailWithError error: Error) {
-        log.error("System extension request failed: \(error.localizedDescription)")
-        fire(.failure(error.localizedDescription))
-    }
-
-    private func fire(_ outcome: SystemExtensionOutcome) {
-        if fired { return }
-        fired = true
-        onComplete(outcome)
-    }
-}

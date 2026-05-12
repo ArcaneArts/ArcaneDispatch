@@ -1,42 +1,53 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  IMPORTANT (Phase 5+ tunnel support):
-  * Sandbox is currently OFF for local dev convenience. Before shipping the
-    Network Extension you MUST flip `com.apple.security.app-sandbox` to <true/>
-    and sign the app with an Apple Developer team that owns both this app's
-    bundle ID (art.arcane.ArcaneDispatch) and the extension's bundle ID
-    (art.arcane.ArcaneDispatch.tunnel).
-  * The App Group `group.art.arcane.dispatch` must also be allowlisted in your
-    Apple Developer account.
-  * `com.apple.developer.networking.networkextension` requires entitlement
-    approval from Apple (~2 week turnaround). Apply early.
+  Release entitlements (Runner / container app).
+
+  Several omissions vs. Flutter's default Release.entitlements, each
+  forced by Apple's AMFI rules + our current provisioning setup:
+
+  1. `com.apple.developer.system-extension.install` — the provisioning
+     profile authorizes it, but the moment it's effective, AMFI treats
+     this binary as a System Extension host and forbids the hardened-
+     runtime relaxations Flutter would otherwise need.
+     (AMFI checks the *profile*-authorized entitlements, not the
+     binary's claim, so simply omitting the key here is not enough on
+     its own — see point #3.)
+
+  2. `com.apple.security.application-groups` — absent because the
+     provisioning profile does not currently grant App Groups. Policy
+     and server config flow to the extension via
+     `NETunnelProviderProtocol.providerConfiguration` instead.
+     See `macos/Runner/DebugProfile.entitlements` for the steps to
+     restore App Groups.
+
+  3. Hardened-runtime relaxations (`allow-jit`,
+     `allow-unsigned-executable-memory`, `disable-library-validation`)
+     are also ABSENT here. Apple's AMFI rejects them as soon as the
+     profile carries `system-extension.install`, regardless of whether
+     the binary claims them, because the same kernel rule applies to
+     anything that *could* host a System Extension under the active
+     profile. Dropping them is fine for the release / AOT build —
+     AOT-compiled Dart doesn't need JIT. Plugins that need
+     `disable-library-validation` must be signed with the same team or
+     dropped from the macOS embedder.
+
+  TL;DR — until the dev portal's App ID `art.arcane.ArcaneDispatch` is
+  reconfigured (drop SystemExtensions capability, optionally add App
+  Groups), only the Release configuration can launch on a signed build.
+  See README troubleshooting for the dev-portal walkthrough.
 -->
 <plist version="1.0">
 <dict>
-	<key>com.apple.security.app-sandbox</key>
-	<false/>
-	<key>com.apple.security.cs.allow-jit</key>
-	<true/>
-	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-	<true/>
-	<key>com.apple.security.cs.disable-library-validation</key>
-	<true/>
-	<key>com.apple.security.network.client</key>
-	<true/>
-	<key>com.apple.security.network.server</key>
-	<true/>
-	<!-- Phase 5: shared container with the Packet Tunnel extension. -->
-	<key>com.apple.security.application-groups</key>
-	<array>
-		<string>group.art.arcane.dispatch</string>
-	</array>
-	<!-- Phase 5: container app needs to install + activate the extension. -->
 	<key>com.apple.developer.networking.networkextension</key>
 	<array>
 		<string>packet-tunnel-provider</string>
 	</array>
-	<key>com.apple.developer.system-extension.install</key>
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.network.server</key>
 	<true/>
 </dict>
 </plist>

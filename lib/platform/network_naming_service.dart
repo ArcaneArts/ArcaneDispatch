@@ -89,11 +89,15 @@ class NamedInterface {
   });
 
   /// Human label preferred order:
-  /// 1. SSID for Wi-Fi (the network name the user knows).
+  /// 1. For Wi-Fi: `Wi-Fi — SSID` so the user sees both the connection
+  ///    kind and the network they're on (e.g. `Wi-Fi — Hometown`).
+  ///    Falls back to just the SSID if `kind` somehow isn't `wifi`.
   /// 2. Hardware port name (`iPhone USB`, `USB 10/100/1000 LAN`).
   /// 3. BSD device name as a last resort.
   String get displayName {
-    if (ssid != null && ssid!.isNotEmpty) return ssid!;
+    if (ssid != null && ssid!.isNotEmpty) {
+      return kind == NamedInterfaceKind.wifi ? 'Wi-Fi \u2014 ${ssid!}' : ssid!;
+    }
     if (hardwarePort.isNotEmpty) return hardwarePort;
     return bsdName;
   }
@@ -168,10 +172,157 @@ class NamedInterface {
   }
 }
 
+/// One saved network service as System Settings → Network displays it.
+///
+/// Unlike [NamedInterface] (which only enumerates currently-attached
+/// hardware ports), a [KnownNetworkService] is something the OS *knows
+/// about* — including ports that aren't currently up. Examples:
+///
+///   * `iPhone USB` (en8) — the user has tethered their iPhone via USB
+///     before; the service is saved, but `en8` only comes up when the
+///     iPhone is plugged in.
+///   * `USB 10/100/1000 LAN` (en10) — a USB-Ethernet adapter the user
+///     has paired with before; the service is saved, but `en10` only
+///     comes up when the adapter is plugged in.
+///   * `Bluetooth PAN` — surfaces when there's a paired
+///     Bluetooth-tether-capable device.
+///
+/// Surfacing these lets the user *know* that Dispatch will combine
+/// their iPhone tether the moment they plug it in, instead of having to
+/// guess whether it's even being considered.
+class KnownNetworkService {
+  /// User-visible service name from `networksetup -listnetworkserviceorder`
+  /// (`Wi-Fi`, `iPhone USB`, `USB 10/100/1000 LAN 2`).
+  final String serviceName;
+
+  /// Hardware-port name as macOS exposes it. Identical to [serviceName]
+  /// for most entries; differs only when the user renamed the service
+  /// in System Settings.
+  final String hardwarePort;
+
+  /// BSD device name (`en0`, `en8`, …). Null when the service has no
+  /// underlying device — pure-virtual VPN services (already filtered out
+  /// on the Swift side, but defensively kept nullable here).
+  final String? bsdName;
+
+  /// SSID currently associated with this interface — only populated for
+  /// Wi-Fi entries that are currently up.
+  final String? ssid;
+
+  /// Coarse kind classification, same vocabulary as [NamedInterfaceKind].
+  final NamedInterfaceKind kind;
+
+  /// True iff the BSD device is currently up (`ifconfig -lu`). The UI
+  /// uses this to bucket entries into Connected / Disconnected /
+  /// Available.
+  final bool isCurrentlyAvailable;
+
+  /// True iff the service is starred in `networksetup`'s listing — the
+  /// user has explicitly turned it off in System Settings → Network.
+  /// We still surface it (greyed out) so the user can see it.
+  final bool disabled;
+
+  const KnownNetworkService({
+    required this.serviceName,
+    required this.hardwarePort,
+    required this.kind,
+    this.bsdName,
+    this.ssid,
+    this.isCurrentlyAvailable = false,
+    this.disabled = false,
+  });
+
+  /// Human-friendly display label.
+  /// 1. For Wi-Fi: `Wi-Fi — SSID` so the kind is always obvious even
+  ///    when the SSID is something cute like `Hometown`. Falls back to
+  ///    just the SSID if `kind` somehow isn't `wifi`.
+  /// 2. The service name otherwise — that's the name the user gave it
+  ///    in System Settings.
+  String get displayName {
+    if (ssid != null && ssid!.isNotEmpty) {
+      return kind == NamedInterfaceKind.wifi ? 'Wi-Fi \u2014 ${ssid!}' : ssid!;
+    }
+    return serviceName.isEmpty ? hardwarePort : serviceName;
+  }
+
+  /// Short kind label for chips (`Wi-Fi`, `Ethernet`, `Cellular`, …).
+  String get kindLabel {
+    switch (kind) {
+      case NamedInterfaceKind.wifi:
+        return 'Wi-Fi';
+      case NamedInterfaceKind.ethernet:
+        return 'Ethernet';
+      case NamedInterfaceKind.cellularTether:
+        return 'Cellular';
+      case NamedInterfaceKind.bluetoothTether:
+        return 'Bluetooth';
+      case NamedInterfaceKind.thunderbolt:
+        return 'Thunderbolt';
+      case NamedInterfaceKind.loopback:
+        return 'Loopback';
+      case NamedInterfaceKind.virtualTunnel:
+        return 'VPN';
+      case NamedInterfaceKind.bridge:
+        return 'Bridge';
+      case NamedInterfaceKind.other:
+        return hardwarePort.isEmpty ? 'Network' : hardwarePort;
+    }
+  }
+
+  /// True iff this service is one a normal user would expect to see in
+  /// a network picker (Wi-Fi, Ethernet, cellular/bluetooth tether,
+  /// Thunderbolt). Bridges and loopback are filtered out.
+  ///
+  /// We're intentionally permissive about `.other`: many USB-Ethernet
+  /// adapters report a chipset name (e.g. `AX88179A`) that our keyword
+  /// classifier can't bucket, but the user explicitly added them as a
+  /// network service so we still surface them. Truly internal entries
+  /// (bridges, loopback, VPN passthrough) are excluded.
+  bool get isUserFacing {
+    switch (kind) {
+      case NamedInterfaceKind.wifi:
+      case NamedInterfaceKind.ethernet:
+      case NamedInterfaceKind.cellularTether:
+      case NamedInterfaceKind.bluetoothTether:
+      case NamedInterfaceKind.thunderbolt:
+        return true;
+      case NamedInterfaceKind.other:
+        // Surface saved services that have a real hardware device. The
+        // user put them there; we trust the user.
+        return bsdName != null && bsdName!.isNotEmpty;
+      case NamedInterfaceKind.bridge:
+      case NamedInterfaceKind.virtualTunnel:
+      case NamedInterfaceKind.loopback:
+        return false;
+    }
+  }
+
+  /// Parse one channel payload. Returns null on missing keys.
+  static KnownNetworkService? fromChannel(Object? value) {
+    if (value is! Map) return null;
+    Object? rawName = value['serviceName'];
+    if (rawName is! String || rawName.isEmpty) return null;
+    return KnownNetworkService(
+      serviceName: rawName,
+      hardwarePort: (value['hardwarePort'] as String?) ?? rawName,
+      bsdName: value['bsdName'] as String?,
+      ssid: value['ssid'] as String?,
+      kind: NamedInterfaceKindWire.parse(value['kind']),
+      isCurrentlyAvailable: value['isCurrentlyAvailable'] == true,
+      disabled: value['disabled'] == true,
+    );
+  }
+}
+
 /// Optional injection point for tests so we don't have to spin up a real
 /// MethodChannel handler. Production wires the macOS handler via
 /// `MainFlutterWindow.swift`.
 typedef NamedInterfaceFetcher = Future<List<NamedInterface>> Function();
+
+/// Same idea but for [KnownNetworkService]s — refreshes the saved
+/// network-services list. Tests pass a fake to avoid MethodChannel
+/// setup.
+typedef KnownServiceFetcher = Future<List<KnownNetworkService>> Function();
 
 /// Periodically reads the friendly per-interface metadata from the macOS
 /// side and exposes it as a [ChangeNotifier]. The UI listens and rebuilds
@@ -187,16 +338,19 @@ class NetworkNamingService extends ChangeNotifier {
       MethodChannel('art.arcane.dispatch/naming');
 
   final NamedInterfaceFetcher _fetch;
+  final KnownServiceFetcher _fetchServices;
   final Duration _refreshInterval;
   final bool _autoStart;
 
   Map<String, NamedInterface> _byBsd = const <String, NamedInterface>{};
+  List<KnownNetworkService> _services = const <KnownNetworkService>[];
   Timer? _timer;
   bool _disposed = false;
   bool _refreshing = false;
 
   /// [fetcher] overrides the default channel-based resolver. Tests pass a
-  /// fake to avoid MethodChannel setup.
+  /// fake to avoid MethodChannel setup. [servicesFetcher] does the same
+  /// for the saved-network-services list.
   ///
   /// [autoStart] (default true in production) controls whether [start]
   /// actually arms the periodic timer. Tests can set it to `false` to
@@ -205,9 +359,11 @@ class NetworkNamingService extends ChangeNotifier {
   /// `MainFlutterWindow.swift` channel) always uses the default.
   NetworkNamingService({
     NamedInterfaceFetcher? fetcher,
+    KnownServiceFetcher? servicesFetcher,
     Duration refreshInterval = const Duration(seconds: 6),
     bool autoStart = true,
   })  : _fetch = fetcher ?? _defaultFetcher,
+        _fetchServices = servicesFetcher ?? _defaultServicesFetcher,
         _refreshInterval = refreshInterval,
         _autoStart = autoStart;
 
@@ -215,6 +371,13 @@ class NetworkNamingService extends ChangeNotifier {
   /// completes. UI must not assume a specific key set is present.
   Map<String, NamedInterface> get byBsd {
     return _byBsd;
+  }
+
+  /// Saved network services as System Settings → Network lists them.
+  /// Returns an empty list until the first refresh; refreshes in lockstep
+  /// with [byBsd].
+  List<KnownNetworkService> get services {
+    return _services;
   }
 
   /// Resolve a single BSD device name. Returns `null` when the resolver
@@ -252,14 +415,30 @@ class NetworkNamingService extends ChangeNotifier {
     if (_disposed || _refreshing) return;
     _refreshing = true;
     try {
-      List<NamedInterface> items = await _fetch();
+      // Fetch interfaces + saved services concurrently; the calls are
+      // independent.
+      List<dynamic> results = await Future.wait(<Future<dynamic>>[
+        _fetch(),
+        _fetchServices(),
+      ]);
       if (_disposed) return;
+      List<NamedInterface> items = results[0] as List<NamedInterface>;
+      List<KnownNetworkService> svcItems =
+          results[1] as List<KnownNetworkService>;
       Map<String, NamedInterface> next = <String, NamedInterface>{};
       for (NamedInterface item in items) {
         next[item.bsdName] = item;
       }
+      bool changed = false;
       if (!_mapEquals(_byBsd, next)) {
         _byBsd = Map<String, NamedInterface>.unmodifiable(next);
+        changed = true;
+      }
+      if (!_servicesEquals(_services, svcItems)) {
+        _services = List<KnownNetworkService>.unmodifiable(svcItems);
+        changed = true;
+      }
+      if (changed) {
         notifyListeners();
       }
     } catch (_) {
@@ -291,6 +470,23 @@ class NetworkNamingService extends ChangeNotifier {
     return true;
   }
 
+  bool _servicesEquals(
+      List<KnownNetworkService> a, List<KnownNetworkService> b) {
+    if (a.length != b.length) return false;
+    for (int i = 0; i < a.length; i++) {
+      KnownNetworkService x = a[i];
+      KnownNetworkService y = b[i];
+      if (x.serviceName != y.serviceName) return false;
+      if (x.hardwarePort != y.hardwarePort) return false;
+      if (x.bsdName != y.bsdName) return false;
+      if (x.ssid != y.ssid) return false;
+      if (x.kind != y.kind) return false;
+      if (x.isCurrentlyAvailable != y.isCurrentlyAvailable) return false;
+      if (x.disabled != y.disabled) return false;
+    }
+    return true;
+  }
+
   /// Default fetcher: drives the `art.arcane.dispatch/naming` channel.
   /// Returns an empty list when the channel isn't implemented (other
   /// platforms, tests without a binary messenger).
@@ -311,5 +507,27 @@ class NetworkNamingService extends ChangeNotifier {
       // Handler raised on the Swift side. Swallow — keep last-known.
     }
     return const <NamedInterface>[];
+  }
+
+  /// Default fetcher for saved network services.
+  static Future<List<KnownNetworkService>> _defaultServicesFetcher() async {
+    try {
+      Object? raw = await _channel.invokeMethod('listKnownServices');
+      if (raw is List) {
+        List<KnownNetworkService> out = <KnownNetworkService>[];
+        for (Object? item in raw) {
+          KnownNetworkService? parsed = KnownNetworkService.fromChannel(item);
+          if (parsed != null) out.add(parsed);
+        }
+        return out;
+      }
+    } on MissingPluginException {
+      // Naming plugin not wired (older app version, non-macOS, test
+      // without a messenger). Return empty so the UI just falls back to
+      // what it had before — the live interfaces list.
+    } on PlatformException {
+      // Swift handler raised. Swallow — keep last-known.
+    }
+    return const <KnownNetworkService>[];
   }
 }

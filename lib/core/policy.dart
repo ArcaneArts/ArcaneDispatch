@@ -58,8 +58,14 @@ class Policy {
   /// When true, each link runs a recurring HTTP probe against Apple's
   /// captive-portal endpoint (or any equivalent target). Links that come
   /// back as `captive` are effectively demoted to `Backup` priority by
-  /// the controller's policy view until they pass again. Disabled by
-  /// default so this only kicks in for users who want it.
+  /// the controller's policy view until they pass again.
+  ///
+  /// Defaults to **on**: this is the only mechanism we have to detect
+  /// "connected but no internet" (coffee-shop Wi-Fi waiting on a ToS
+  /// login). Without it, a captive link looks healthy to the supervisor
+  /// (its TCP probe completes against the portal's transparent proxy)
+  /// and traffic silently fails. Users can still flip it off in
+  /// `Mode > Help me sign in to coffee-shop Wi-Fi`.
   final bool captivePortalAssist;
 
   const Policy({
@@ -72,7 +78,7 @@ class Policy {
     this.serverUrl,
     this.serverToken,
     this.bondedTransport = false,
-    this.captivePortalAssist = false,
+    this.captivePortalAssist = true,
   });
 
   Policy copyWith({
@@ -166,7 +172,7 @@ class Policy {
       serverToken: json['serverToken'] as String?,
       bondedTransport: _coerceBool(json['bondedTransport'], fallback: false),
       captivePortalAssist:
-          _coerceBool(json['captivePortalAssist'], fallback: false),
+          _coerceBool(json['captivePortalAssist'], fallback: true),
     );
   }
 

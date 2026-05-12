@@ -51,14 +51,36 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     ) {
         log.info("startTunnel: invoked")
 
-        // Load the latest policy snapshot from the App Group container so the
-        // extension comes up with the same view of the world the UI shows.
-        guard let policy = policyStore.load() else {
-            log.error("startTunnel: no policy.json found in App Group container")
+        // Phase 1: read the policy snapshot from the VPN configuration's
+        // `providerConfiguration` dict. The container app stashes it there
+        // before saveToPreferences so we don't need an App Group container.
+        // Phase 2 (fallback): if the dict is missing the key — older
+        // configurations, or a future App-Group rollout that pushes policy
+        // via the shared file system — read from the App Group container.
+        let providerConfig =
+            (protocolConfiguration as? NETunnelProviderProtocol)?
+                .providerConfiguration
+        let inlinePolicyJson = providerConfig?["policy"] as? String
+        let policy: ExtensionPolicy?
+        if let json = inlinePolicyJson,
+           let data = json.data(using: .utf8),
+           let parsed = try? JSONDecoder()
+                .decode(ExtensionPolicy.self, from: data) {
+            log.info("startTunnel: loaded policy from providerConfiguration (\(parsed.links.count) links)")
+            policy = parsed
+        } else {
+            if inlinePolicyJson != nil {
+                log.error("startTunnel: providerConfiguration[policy] present but un-decodable; falling back to App Group")
+            }
+            policy = policyStore.load()
+        }
+
+        guard let policy = policy else {
+            log.error("startTunnel: no policy available (providerConfiguration empty and App Group container missing)")
             completionHandler(NEVPNError(.configurationInvalid))
             return
         }
-        log.info("startTunnel: loaded policy with \(policy.links.count) links")
+        log.info("startTunnel: policy ready with \(policy.links.count) links")
 
         // Tunnel network settings: minimal IPv4 for Phase 5; IPv6 + custom DNS
         // come in Phase 6 once we drive routing decisions per-flow.
@@ -109,16 +131,52 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
         switch message.kind {
         case .reloadPolicy:
-            if let updated = policyStore.load() {
+            // Phase 1: prefer the inline JSON payload — works even when the
+            // extension is sandboxed away from any App Group container.
+            // Phase 2 (fallback): if the payload is absent or malformed
+            // and we do have an App Group container, re-read from disk so
+            // older container builds keep working.
+            let updated: ExtensionPolicy?
+            if let json = message.policyJson,
+               let data = json.data(using: .utf8),
+               let parsed = try? JSONDecoder()
+                    .decode(ExtensionPolicy.self, from: data) {
+                updated = parsed
+            } else {
+                if message.policyJson != nil {
+                    log.error("handleAppMessage: inline reloadPolicy payload un-decodable; falling back to App Group")
+                }
+                updated = policyStore.load()
+            }
+            if let updated = updated {
                 log.info("handleAppMessage: reloaded policy with \(updated.links.count) links")
                 pump?.applyPolicy(updated)
                 completionHandler?(Data("ok".utf8))
             } else {
-                log.error("handleAppMessage: reloadPolicy failed (no policy.json)")
+                log.error("handleAppMessage: reloadPolicy failed (no inline payload and no policy.json)")
                 completionHandler?(nil)
             }
         case .ping:
             completionHandler?(Data("pong".utf8))
+        case .getThroughput:
+            // Drain the per-link byte accumulators built up by the
+            // forwarder since the previous RPC. Returns a JSON list of
+            // `{linkId, bytesIn, bytesOut}` the container app turns into
+            // bytes-per-second `LinkMetric` events for the UI's bond
+            // graphic particle flow and bandwidth readouts.
+            guard let pump = pump else {
+                completionHandler?(Data("[]".utf8))
+                return
+            }
+            let snap = pump.drainThroughputForRPC()
+            // `JSONSerialization` is fine here — the keys are static
+            // ASCII and the values are scalar Int / String.
+            if let data = try? JSONSerialization.data(
+                withJSONObject: snap, options: []) {
+                completionHandler?(data)
+            } else {
+                completionHandler?(Data("[]".utf8))
+            }
         }
     }
 }
@@ -130,7 +188,15 @@ struct TunnelMessage: Codable {
     enum Kind: String, Codable {
         case reloadPolicy
         case ping
+        /// Drain the forwarder's per-link bytes-since-last-drain counters.
+        /// Response is a JSON array of `{linkId, bytesIn, bytesOut}` objects
+        /// (Int values); empty array when the tunnel isn't pumping yet.
+        case getThroughput
     }
 
     let kind: Kind
+    /// Optional inline policy JSON for `reloadPolicy`. Travels in-band so
+    /// the extension can apply a new snapshot without reading the App Group
+    /// container (which is unavailable when the entitlement is missing).
+    let policyJson: String?
 }

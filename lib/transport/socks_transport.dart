@@ -113,6 +113,27 @@ class SocksTransport implements Transport {
   /// engine activated and why others were dropped.
   PolicyDecision? _lastDecision;
 
+  /// Per-link, per-direction byte accumulators used to derive throughput
+  /// metrics. Reset on every tick of [_throughputTimer]; the diff between
+  /// reads is what we publish as `bpsIn` / `bpsOut`.
+  ///
+  /// Keyed by [Link.id]. Missing entries are implicit zero — we don't
+  /// allocate per-link state until bytes actually flow.
+  final Map<String, int> _bytesInWindow = <String, int>{};
+  final Map<String, int> _bytesOutWindow = <String, int>{};
+
+  /// Periodic timer that drains the byte accumulators into [_metrics] as a
+  /// `LinkMetric(bpsIn, bpsOut)` sample once per [_throughputInterval]. The
+  /// controller listens on `metrics`, merges the throughput sample with
+  /// probe samples (RTT/jitter/loss), and surfaces both to the UI.
+  ///
+  /// Lives for the lifetime of the transport; cancelled in [dispose].
+  Timer? _throughputTimer;
+
+  /// How often we publish a throughput sample. 1 Hz matches the EWMA
+  /// window the UI labels as "live" and stays cheap on battery.
+  static const Duration _throughputInterval = Duration(seconds: 1);
+
   bool _disposed = false;
 
   SocksTransport({
@@ -236,6 +257,10 @@ class SocksTransport implements Transport {
       _state.add(
         TransportStatus(state: TransportState.running, endpoint: endpoint),
       );
+      // Begin publishing 1 Hz throughput samples. This is what feeds the
+      // power-card "Download / Upload" cells and the per-link bandwidth
+      // sparklines on the Activity tab.
+      _startThroughputTimer();
     } catch (error) {
       _state.add(
         TransportStatus(
@@ -254,6 +279,10 @@ class SocksTransport implements Transport {
       return;
     }
     _state.add(TransportStatus(state: TransportState.stopping));
+    // Stop the throughput timer first so we don't leak a final partial
+    // sample after the server tears down. The helper also publishes a
+    // zero-sample per link so the UI reads "0 Mbps" immediately.
+    _stopThroughputTimer();
     await _server.stop();
     // Persist accumulated counters before relinquishing control. Cheap when
     // nothing is dirty; safe even if [stop] is called repeatedly.
@@ -284,6 +313,13 @@ class SocksTransport implements Transport {
     _currentMetrics = Map<String, LinkMetric>.unmodifiable(metrics);
   }
 
+  @override
+  Map<String, int> dataUsedSnapshot() {
+    // The accountant feeds the [DataMeter] on every chunk; surface its
+    // snapshot directly. Counters reset at each link's billing-cycle anchor.
+    return _dataMeter.snapshot();
+  }
+
   /// The most recent [PolicyDecision] this transport applied. `null` until
   /// the first successful [start]. Useful for dashboards that want to render
   /// "primary group active" / "primary down, on secondary" status.
@@ -309,6 +345,8 @@ class SocksTransport implements Transport {
       return;
     }
     _disposed = true;
+    _throughputTimer?.cancel();
+    _throughputTimer = null;
     await stop().catchError((Object _) {});
     for (TokenBucket bucket in _buckets.values) {
       bucket.dispose();
@@ -339,6 +377,18 @@ class SocksTransport implements Transport {
     if (linkId == null || bytes <= 0) {
       return;
     }
+    // Accumulate into the live throughput window before throttling so the
+    // metric stream reflects what the user *actually* used, not just what
+    // got through the token bucket after rate-limiting.
+    //
+    // [ByteDirection.upstream] means bytes going from the local app out
+    // to the remote — that's user-facing "upload". `downstream` is the
+    // remote -> app direction, which the UI labels "download". Mapping
+    // them onto bpsIn/bpsOut explicitly keeps that contract obvious.
+    Map<String, int> window = direction == ByteDirection.downstream
+        ? _bytesInWindow
+        : _bytesOutWindow;
+    window.update(linkId, (int v) => v + bytes, ifAbsent: () => bytes);
     TokenBucket? bucket = _buckets[linkId];
     if (bucket != null && !bucket.isUnlimited) {
       await bucket.acquire(bytes);
@@ -347,6 +397,76 @@ class SocksTransport implements Transport {
     if (link != null) {
       _dataMeter.recordBytes(link, bytes);
     }
+  }
+
+  /// Drain the per-link byte accumulators, compute bytes-per-second over
+  /// the elapsed window, and emit one [LinkMetric] per link. Called on a
+  /// 1 Hz timer while the transport is running.
+  ///
+  /// Important: we emit a sample *for every known link*, even ones that
+  /// didn't see traffic this tick. That guarantees the UI shows `0 Mbps`
+  /// when a link is idle instead of stale numbers from the previous burst.
+  void _tickThroughput() {
+    if (_disposed) return;
+    DateTime now = DateTime.now();
+    // Union of every link we've ever seen plus every link in the policy.
+    // The policy union is what keeps idle-but-configured links visible.
+    Set<String> ids = <String>{
+      ..._linksById.keys,
+      ..._bytesInWindow.keys,
+      ..._bytesOutWindow.keys,
+    };
+    for (String linkId in ids) {
+      int inBytes = _bytesInWindow.remove(linkId) ?? 0;
+      int outBytes = _bytesOutWindow.remove(linkId) ?? 0;
+      // bytes/sec for a 1-second window is just the byte total. If we
+      // ever change [_throughputInterval] we'd divide by its seconds.
+      double bpsIn = inBytes.toDouble();
+      double bpsOut = outBytes.toDouble();
+      LinkMetric sample = LinkMetric(
+        linkId: linkId,
+        capturedAt: now,
+        bpsIn: bpsIn,
+        bpsOut: bpsOut,
+      );
+      if (!_metrics.isClosed) {
+        _metrics.add(sample);
+      }
+    }
+  }
+
+  /// Start the per-second throughput emitter. Idempotent.
+  void _startThroughputTimer() {
+    _throughputTimer ??= Timer.periodic(
+      _throughputInterval,
+      (Timer _) => _tickThroughput(),
+    );
+  }
+
+  /// Stop the throughput emitter and zero-out any in-flight accumulators
+  /// so the next start cycle reads from a clean slate.
+  void _stopThroughputTimer() {
+    _throughputTimer?.cancel();
+    _throughputTimer = null;
+    // Emit one final all-zero sample per known link so the UI doesn't
+    // freeze on the last positive reading after the user hits Stop.
+    if (_metrics.isClosed) {
+      _bytesInWindow.clear();
+      _bytesOutWindow.clear();
+      return;
+    }
+    DateTime now = DateTime.now();
+    Set<String> ids = <String>{..._linksById.keys};
+    for (String linkId in ids) {
+      _metrics.add(LinkMetric(
+        linkId: linkId,
+        capturedAt: now,
+        bpsIn: 0,
+        bpsOut: 0,
+      ));
+    }
+    _bytesInWindow.clear();
+    _bytesOutWindow.clear();
   }
 
   /// (Re)build the per-link token buckets to match [links]'s speed caps.

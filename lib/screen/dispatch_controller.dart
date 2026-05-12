@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:hive/hive.dart';
@@ -11,6 +12,9 @@ import '../core/link_metric.dart';
 import '../core/network_interface_repository.dart';
 import '../core/policy.dart';
 import '../core/proxy_event.dart';
+import '../crypto/noise.dart';
+import '../paired/pair_coordinator.dart';
+import '../paired/paired_channel.dart';
 import '../platform/network_naming_service.dart';
 import '../platform/startup_service.dart';
 import '../policy/link_supervisor.dart';
@@ -68,6 +72,12 @@ class DispatchController extends ChangeNotifier {
   /// UI sees a single map.
   Map<String, LinkMetric> linkMetrics = <String, LinkMetric>{};
 
+  /// Per-link bytes used since the start of each link's current billing
+  /// cycle. Mirrored from the active [Transport]'s `dataUsedSnapshot()` on
+  /// every metric tick. Empty when no transport reports usage (e.g. a fresh
+  /// Tunnel install before the extension's first stats flush).
+  Map<String, int> dataUsedBytesByLink = const <String, int>{};
+
   /// Most recent supervisor verdict — per-link health + kill-switch state.
   /// `null` until the first probe tick lands.
   LinkHealthEvent? lastHealthEvent;
@@ -108,6 +118,12 @@ class DispatchController extends ChangeNotifier {
       _captiveSubscriptions =
       <String, StreamSubscription<CaptivePortalState>>{};
 
+  /// Pair & Share coordinator. Lazy: callers that touch [pairCoordinator]
+  /// trigger discovery wiring; the widget-test path that never opens the
+  /// Pair tab leaves this null so no MethodChannel / Bonjour timers leak.
+  PairCoordinator? _pairCoordinator;
+  final PairCoordinator? Function()? _pairCoordinatorFactory;
+
   bool loadingInterfaces = false;
   String? errorText;
 
@@ -135,15 +151,21 @@ class DispatchController extends ChangeNotifier {
     required this.namingService,
     required Uri captiveTarget,
     required CaptivePortalProbeFn captiveProbe,
+    PairCoordinator? Function()? pairCoordinatorFactory,
   })  : _transportFactory = transportFactory,
         _transport = transport,
         _captiveTarget = captiveTarget,
-        _captiveProbe = captiveProbe {
+        _captiveProbe = captiveProbe,
+        _pairCoordinatorFactory = pairCoordinatorFactory {
     _wireTransport();
     _wireProbes();
     _wireSupervisor();
     _wireNamingService();
-    _reconcileCaptiveDetectors();
+    // Captive-portal detectors spin up periodic timers, so we defer
+    // them to [initialize] for the same reason the naming service is
+    // deferred there: the Flutter widget-test framework refuses to
+    // accept a constructor that leaves timers pending in the zone.
+    // Production callers always invoke [initialize] before showing UI.
   }
 
   /// Public factory. Resolves defaults (transport factory, settings, initial
@@ -159,6 +181,7 @@ class DispatchController extends ChangeNotifier {
     NetworkNamingService? namingService,
     Uri? captiveTarget,
     CaptivePortalProbeFn? captiveProbe,
+    PairCoordinator? Function()? pairCoordinatorFactory,
   }) {
     TransportFactory factory =
         transportFactory ?? _defaultTransportFactory(repository, settingsBox);
@@ -181,6 +204,8 @@ class DispatchController extends ChangeNotifier {
       namingService: naming,
       captiveTarget: captiveTarget ?? appleCaptiveProbeUri,
       captiveProbe: captiveProbe ?? httpCaptivePortalProbe,
+      pairCoordinatorFactory:
+          pairCoordinatorFactory ?? () => _defaultPairCoordinator(settingsBox),
     );
   }
 
@@ -203,6 +228,35 @@ class DispatchController extends ChangeNotifier {
         '${settings.listenHost}:${settings.listenPort}';
   }
 
+  /// Lazy accessor for the Pair & Share coordinator. The first read
+  /// builds the coordinator (which spins up the discovery surface);
+  /// callers that never open the Pair tab pay nothing. Returns `null`
+  /// when the construction factory chose to skip (e.g. on platforms
+  /// without a Bonjour bridge in a test harness).
+  PairCoordinator? get pairCoordinator {
+    if (_pairCoordinator != null) return _pairCoordinator;
+    PairCoordinator? Function()? factory = _pairCoordinatorFactory;
+    if (factory == null) return null;
+    _pairCoordinator = factory();
+    // Forward notifications so listeners of [DispatchController] (the
+    // home screen) repaint when pairing state changes without having
+    // to subscribe to the coordinator separately.
+    _pairCoordinator?.addListener(notifyListeners);
+    return _pairCoordinator;
+  }
+
+  /// Convenience wrapper that approves the pending handshake and
+  /// merges the resulting paired peer into the policy. UI calls this
+  /// from the "Confirm pairing" modal's primary button.
+  Future<void> approvePendingPairing() async {
+    PairCoordinator? p = pairCoordinator;
+    if (p == null) return;
+    Link? link = await p.approvePendingHandshake();
+    if (link != null) {
+      await attachPairedLink(link);
+    }
+  }
+
   Future<void> initialize() async {
     // Re-hydrate the latest metric snapshot from the previous run so the UI
     // has something to render before the first probe tick lands.
@@ -215,6 +269,10 @@ class DispatchController extends ChangeNotifier {
     // "Home Wi-Fi" as soon as the OS replies. Tests inject a fetcher
     // so this is a no-op outside production.
     namingService.start();
+    // Captive-portal detectors live here (not in the constructor) so the
+    // Flutter widget-test framework doesn't see periodic timers spin up
+    // before the test even begins. See the constructor comment.
+    _reconcileCaptiveDetectors();
     await refreshInterfaces();
     probeService.updateLinks(settings.links);
     if (settings.startProxyOnLaunch && settings.links.isNotEmpty) {
@@ -234,6 +292,12 @@ class DispatchController extends ChangeNotifier {
       // Trigger an out-of-band refresh so the cards reflect the new
       // state without waiting for the next periodic tick.
       unawaited(namingService.refresh());
+      // Pull every newly-visible user-facing interface into the policy as
+      // a Primary link. This is the Speedify-style "combine everything you
+      // have automatically" behavior: the user never has to click "Add"
+      // to bring a network online; they only have to toggle one off if
+      // they don't want it. See [_autoAdoptInterfaces] for the rules.
+      await _autoAdoptInterfaces();
     } catch (error) {
       errorText = 'Failed to read network interfaces: $error';
     } finally {
@@ -247,6 +311,129 @@ class DispatchController extends ChangeNotifier {
   /// sparkline UI.
   List<LinkMetric> metricHistory(String linkId) {
     return metricStore.historyFor(linkId);
+  }
+
+  /// Walk the current interface snapshot and add a [Link] for every
+  /// user-facing interface that the policy doesn't already cover. This
+  /// is the "Speedify-style combine everything automatically" path —
+  /// the user never has to manually add a network; they only flip one
+  /// off if they don't want it.
+  ///
+  /// Rules:
+  ///
+  ///   1. An interface is "already covered" if any existing [Link] in
+  ///      `settings.links` references its BSD name (via [Link.interfaceName])
+  ///      or any of its current IP literals (via [Link.sourceAddress]).
+  ///      Existing links with [LinkPriority.never] still count as covered —
+  ///      that's how we remember "user turned this one off; don't keep
+  ///      re-adding it".
+  ///   2. An interface is "user-facing" iff the naming service classifies
+  ///      it as wifi / ethernet / cellular / bluetooth / thunderbolt. When
+  ///      the naming map hasn't loaded yet (non-macOS hosts, cold boot,
+  ///      tests) we fall back to a conservative heuristic so we don't
+  ///      blindly adopt plumbing like `awdl0` or `bridge0`.
+  ///   3. New auto-links default to [LinkPriority.primary] so they
+  ///      participate immediately. The label is left empty — the home
+  ///      screen re-derives a friendly name on every paint from the
+  ///      live naming map.
+  ///
+  /// Idempotent: calling repeatedly with no change is a no-op. Safe to
+  /// invoke from both [refreshInterfaces] (snapshot updates) and from
+  /// the naming service listener (kind reclassification).
+  Future<void> _autoAdoptInterfaces() async {
+    if (interfaces.isEmpty) return;
+
+    // Build the set of BSD names already owned by some existing link.
+    // Paired links don't have a BSD anchor; skip them.
+    Set<String> claimedBsd = <String>{};
+    for (Link link in settings.links) {
+      if (link.kind == LinkKind.paired) continue;
+      String? iface = link.interfaceName;
+      if (iface != null && iface.isNotEmpty) {
+        claimedBsd.add(iface.toLowerCase());
+      }
+      String? src = link.sourceAddress;
+      if (src != null && src.isNotEmpty) {
+        for (NetworkInterfaceSnapshot snap in interfaces) {
+          for (InternetAddress addr in snap.validAddresses) {
+            if (addr.address == src) {
+              claimedBsd.add(snap.name.toLowerCase());
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    Map<String, NamedInterface> namedByBsd = namingService.byBsd;
+    bool namingReady = namedByBsd.isNotEmpty;
+    List<Link> next = List<Link>.of(settings.links);
+    bool changed = false;
+
+    for (NetworkInterfaceSnapshot snap in interfaces) {
+      String bsd = snap.name.toLowerCase();
+      if (claimedBsd.contains(bsd)) continue;
+
+      // Decide whether this is the kind of network a normal user would
+      // expect Dispatch to combine. The naming service is the
+      // authoritative classifier; without it we only adopt the most
+      // common BSD slots so we don't add bridges, AWDL links, or
+      // virtual tunnels by accident.
+      NamedInterface? named = namedByBsd[bsd];
+      bool userFacing;
+      if (namingReady) {
+        userFacing = named != null && named.isUserFacing;
+      } else {
+        userFacing = _looksUserFacingByBsd(bsd);
+      }
+      if (!userFacing) continue;
+
+      InternetAddress? primary = _pickPrimaryAddress(snap);
+      if (primary == null) continue;
+
+      // interfaceName preserves the OS casing so the probe service can
+      // reverse-resolve it against future snapshots. sourceAddress is
+      // intentionally left null — the probe binds to whatever IP the
+      // interface currently has, which survives DHCP rebinds without
+      // us having to rewrite the link.
+      String id = 'auto:$bsd';
+      next.add(Link(
+        id: id,
+        label: '',
+        interfaceName: snap.name,
+        sourceAddress: null,
+        priority: LinkPriority.primary,
+        kind: LinkKind.local,
+      ));
+      claimedBsd.add(bsd);
+      changed = true;
+    }
+
+    if (!changed) return;
+    await setLinks(next);
+  }
+
+  /// Conservative pre-naming-service classifier. Returns true only for
+  /// BSD device names that are almost always real user-facing networks
+  /// (Wi-Fi on `en0`/`en1`, cellular tether on `pdp_ip*`). Everything
+  /// else has to wait for the naming map.
+  static bool _looksUserFacingByBsd(String bsd) {
+    if (bsd == 'en0' || bsd == 'en1') return true;
+    if (bsd.startsWith('pdp_ip')) return true;
+    return false;
+  }
+
+  /// Pick the bind-source address for [snap]. Prefer IPv4 — most home
+  /// networks are dual-stack but v4 still routes reliably everywhere.
+  /// Fall back to the first usable address (which will be v6 on a v6-only
+  /// network).
+  static InternetAddress? _pickPrimaryAddress(NetworkInterfaceSnapshot snap) {
+    for (InternetAddress addr in snap.validAddresses) {
+      if (addr.type == InternetAddressType.IPv4) return addr;
+    }
+    return snap.validAddresses.isNotEmpty
+        ? snap.validAddresses.first
+        : null;
   }
 
   Future<void> setListenHost(String host) async {
@@ -675,7 +862,9 @@ class DispatchController extends ChangeNotifier {
   void _wireProbes() {
     _probeMetricSubscription =
         probeService.metrics.listen((LinkMetric metric) {
-      metricStore.record(metric);
+      // [_handleMetric] handles both the live merge and the history
+      // store update so probe + transport samples share the same
+      // record() path.
       _handleMetric(metric);
     });
   }
@@ -712,6 +901,12 @@ class DispatchController extends ChangeNotifier {
     // real change happened. Notify so the home screen swaps `en0` for the
     // current SSID, etc.
     notifyListeners();
+    // The naming map is the authoritative classifier for "is this
+    // interface user-facing?". When it lands (or refreshes) we may now be
+    // able to confidently adopt an interface we previously skipped (e.g.
+    // a Thunderbolt adapter on `en5`). Fire-and-forget — failures here
+    // are non-fatal.
+    unawaited(_autoAdoptInterfaces());
   }
 
   /// Kill-switch driver. When the supervisor reports `killSwitchActive` and
@@ -782,12 +977,65 @@ class DispatchController extends ChangeNotifier {
   }
 
   void _handleMetric(LinkMetric metric) {
+    // Partial samples are common: the probe service publishes RTT/loss/jitter
+    // with throughput fields null, the SOCKS transport publishes the
+    // opposite. Replacing wholesale would erase whichever half we just
+    // measured, so merge instead and keep the latest known value per field.
+    LinkMetric? prior = linkMetrics[metric.linkId];
+    LinkMetric merged = _mergeMetric(prior, metric);
     linkMetrics = <String, LinkMetric>{
       ...linkMetrics,
-      metric.linkId: metric,
+      metric.linkId: merged,
     };
-    supervisor.updateMetric(metric);
+    // Push the merged sample into the history store so the Activity tab
+    // sparklines see both probe and throughput points on the same
+    // timeline.
+    metricStore.record(merged);
+    supervisor.updateMetric(merged);
+    // Refresh the per-cycle bytes view at the same cadence as throughput.
+    // Cheap (just a map copy) and keeps the UI's "Total used" surface
+    // in lockstep with the live MB/s readout.
+    Map<String, int> usage = _transport.dataUsedSnapshot();
+    if (!_dataUsageEquals(dataUsedBytesByLink, usage)) {
+      dataUsedBytesByLink = Map<String, int>.unmodifiable(usage);
+    }
     notifyListeners();
+  }
+
+  static bool _dataUsageEquals(Map<String, int> a, Map<String, int> b) {
+    if (identical(a, b)) {
+      return true;
+    }
+    if (a.length != b.length) {
+      return false;
+    }
+    for (MapEntry<String, int> entry in a.entries) {
+      if (b[entry.key] != entry.value) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// Merge two [LinkMetric] samples. `next`'s non-null fields win; `prior`'s
+  /// values fill in the gaps. The result's `capturedAt` is the later of
+  /// the two timestamps.
+  static LinkMetric _mergeMetric(LinkMetric? prior, LinkMetric next) {
+    if (prior == null || prior.linkId != next.linkId) {
+      return next.withDerivedMos();
+    }
+    DateTime captured =
+        next.capturedAt.isAfter(prior.capturedAt) ? next.capturedAt : prior.capturedAt;
+    return LinkMetric(
+      linkId: next.linkId,
+      capturedAt: captured,
+      rttMs: next.rttMs ?? prior.rttMs,
+      jitterMs: next.jitterMs ?? prior.jitterMs,
+      loss: next.loss ?? prior.loss,
+      mos: next.mos ?? prior.mos,
+      bpsIn: next.bpsIn ?? prior.bpsIn,
+      bpsOut: next.bpsOut ?? prior.bpsOut,
+    ).withDerivedMos();
   }
 
   @override
@@ -815,6 +1063,9 @@ class DispatchController extends ChangeNotifier {
     unawaited(supervisor.dispose());
     namingService.removeListener(_onNamingChanged);
     namingService.dispose();
+    _pairCoordinator?.removeListener(notifyListeners);
+    _pairCoordinator?.dispose();
+    _pairCoordinator = null;
     unawaited(_detachTransport());
     super.dispose();
   }
@@ -851,5 +1102,77 @@ class DispatchController extends ChangeNotifier {
           return TunnelTransport();
       }
     };
+  }
+
+  /// Default Pair coordinator. Uses the [PairedMethodChannelDiscovery]
+  /// (Bonjour bridge) on macOS; on every other platform the channel
+  /// soft-fails and the coordinator simply never sees peer events,
+  /// which is still useful — the UI can host on a known port and
+  /// joiners can type in `host:port` manually (future enhancement).
+  ///
+  /// The Noise identity is loaded lazily so a cold launch doesn't block
+  /// the UI on key generation. It's regenerated and persisted to the
+  /// shared Hive [Box] on first use; subsequent launches reuse the same
+  /// keypair so a paired peer's fingerprint stays stable.
+  static PairCoordinator? _defaultPairCoordinator(Box settingsBox) {
+    return PairCoordinator(
+      discovery: PairedMethodChannelDiscovery(),
+      identity: _loadOrCreateNoiseIdentity(settingsBox),
+      deviceName: _deviceNameOf(settingsBox),
+      deviceId: _deviceIdOf(settingsBox),
+    );
+  }
+
+  /// Hive keys used by the default Noise identity loader. Bumping the
+  /// suffix invalidates the cached keys (e.g. for a migration).
+  static const String _pairIdentityPrivateKey = 'pair_identity_priv_v1';
+  static const String _pairIdentityPublicKey = 'pair_identity_pub_v1';
+  static const String _pairDeviceIdKey = 'pair_device_id_v1';
+  static const String _pairDeviceNameKey = 'pair_device_name_v1';
+
+  /// Returns the persisted Noise keypair, generating + persisting a
+  /// fresh one on the first call. Failures fall back to an
+  /// ephemeral keypair so the UI still has something to render even
+  /// when Hive is read-only (e.g. a sandboxed test).
+  static Future<NoiseKeypair> _loadOrCreateNoiseIdentity(Box box) async {
+    Object? priv = box.get(_pairIdentityPrivateKey);
+    Object? pub = box.get(_pairIdentityPublicKey);
+    if (priv is List<int> && pub is List<int>) {
+      return NoiseKeypair(
+        private: Uint8List.fromList(priv),
+        public: Uint8List.fromList(pub),
+      );
+    }
+    NoiseKeypair fresh = await NoiseKeypair.generate();
+    try {
+      await box.put(_pairIdentityPrivateKey, fresh.private);
+      await box.put(_pairIdentityPublicKey, fresh.public);
+    } catch (_) {
+      // Hive may be inert in tests. Returning the fresh in-memory
+      // keypair is still correct; we just lose persistence.
+    }
+    return fresh;
+  }
+
+  static String _deviceIdOf(Box box) {
+    Object? cached = box.get(_pairDeviceIdKey);
+    if (cached is String && cached.isNotEmpty) return cached;
+    String id =
+        'mac-${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}';
+    try {
+      box.put(_pairDeviceIdKey, id);
+    } catch (_) {}
+    return id;
+  }
+
+  static String _deviceNameOf(Box box) {
+    Object? cached = box.get(_pairDeviceNameKey);
+    if (cached is String && cached.isNotEmpty) return cached;
+    // Fall back to the macOS hostname when available; otherwise a
+    // friendly placeholder that's clearly user-replaceable.
+    String fallback = Platform.localHostname.isNotEmpty
+        ? Platform.localHostname
+        : 'Arcane Dispatch';
+    return fallback;
   }
 }

@@ -21,51 +21,22 @@
 /* End PBXAggregateTarget section */
 
 /* Begin PBXBuildFile section */
-		1119004325BD19B1011B7429 /* Seal.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3EDF8732E849829078CBC6 /* Seal.swift */; };
-		1842DF71713E19052B016F2B /* BondedFraming.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CB1B01E184E900757618989 /* BondedFraming.swift */; };
-		195C5FDDB011993210E50344 /* BondedClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4D99C8767D5D40973ADEED7 /* BondedClient.swift */; };
-		1D7D0172BF8EDF441F6FF0E0 /* IPPacket.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A5D2BC43E04EE575C2752E6 /* IPPacket.swift */; };
-		23CA7A06139D8C90F904CD12 /* Noise.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D1CEA6D55C409975A8BBFAC /* Noise.swift */; };
-		289B0F8555128A0D9286D488 /* ProtocolLadder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85B14F0EC93E690A20CD36A7 /* ProtocolLadder.swift */; };
 		30AD2AA974AA62927FBE2118 /* Pods_RunnerTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA0245990BDE90BC56A4E117 /* Pods_RunnerTests.framework */; };
 		331C80D8294CF71000263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C80D7294CF71000263BE5 /* RunnerTests.swift */; };
 		335BBD1B22A9A15E00E9071D /* GeneratedPluginRegistrant.swift in Sources */ = {isa = PBXBuildFile; fileRef = 335BBD1A22A9A15E00E9071D /* GeneratedPluginRegistrant.swift */; };
 		33AA00012044A3C60003A001 /* DispatchTrayController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33AA00002044A3C60003A001 /* DispatchTrayController.swift */; };
-		33CC10F12044A3C60003C045 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CC10F02044A3C60003C045 /* AppDelegate.swift */; };
-		33CC10F32044A3C60003C045 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 33CC10F22044A3C60003C045 /* Assets.xcassets */; };
-		33CC10F62044A3C60003C045 /* MainMenu.xib in Resources */ = {isa = PBXBuildFile; fileRef = 33CC10F42044A3C60003C045 /* MainMenu.xib */; };
-		33CC11132044BFA00003C045 /* MainFlutterWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CC11122044BFA00003C045 /* MainFlutterWindow.swift */; };
-		4B24A3F0DB8A3F20BA94813F /* PolicyEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF59C80DA82F2E05527F0DF7 /* PolicyEngine.swift */; };
-		565486931F73FA93ECE0737A /* PolicyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DC134CB37358DEAE2D0911E /* PolicyStore.swift */; };
 		5A11A11200000000F0001001 /* TunnelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A11A11100000000F0001001 /* TunnelManager.swift */; };
 		5A11A11400000000F0001002 /* PairChannelHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A11A11300000000F0001002 /* PairChannelHandler.swift */; };
 		5A11A11600000000F0001003 /* PairedNetworkService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A11A11500000000F0001003 /* PairedNetworkService.swift */; };
 		5A11A11800000000F0001004 /* NetworkNamingHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A11A11700000000F0001004 /* NetworkNamingHandler.swift */; };
-		6E6E7AB06B98944EC80C3A7E /* BondedReassembler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E491756D35D2E33AB5415BB /* BondedReassembler.swift */; };
-		71E95F0E1D8BA4059FBC1D1B /* FlowTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFF8563B78B018EF62C4F0F5 /* FlowTracker.swift */; };
+		33CC10F12044A3C60003C045 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CC10F02044A3C60003C045 /* AppDelegate.swift */; };
+		33CC10F32044A3C60003C045 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 33CC10F22044A3C60003C045 /* Assets.xcassets */; };
+		33CC10F62044A3C60003C045 /* MainMenu.xib in Resources */ = {isa = PBXBuildFile; fileRef = 33CC10F42044A3C60003C045 /* MainMenu.xib */; };
+		33CC11132044BFA00003C045 /* MainFlutterWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33CC11122044BFA00003C045 /* MainFlutterWindow.swift */; };
 		9C74471FC10666D1F3F1953E /* Pods_Runner.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 459F629E6502BC9482D1FD1E /* Pods_Runner.framework */; };
-		AEC665EA15B3B85FCFAA5711 /* KeychainKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BC5D362221243186DDBCD18 /* KeychainKeyStore.swift */; };
-		B0CA5B1C629253FB9A1EF037 /* PacketTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F66728B7D46898D7C8AF8F8 /* PacketTunnelProvider.swift */; };
-		C4F6E6B11E44F66D503F59E9 /* BondedModes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13758BAA4EB03E41437FB2D9 /* BondedModes.swift */; };
-		C5738EA73E64FE3CC8FFDCE6 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 29BE5CDEFDE225002C2B67EC /* NetworkExtension.framework */; };
-		D35BF7410F527DBEA4C8FCEE /* PacketPump.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BD54A4D62ABD2F0AAA8A00E /* PacketPump.swift */; };
-		DB9579ED74FAD2A1D263602B /* FlowForwarder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3F2C12C2ECAFECF70A0E089 /* FlowForwarder.swift */; };
-		DC623CC90BAE164FF68D0B30 /* StreamingClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA6EB7E512C97CB73849BF38 /* StreamingClassifier.swift */; };
-		DFAA6EA0D86CE75140DFD43E /* Replay.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F29E1C00529D46A87120C9 /* Replay.swift */; };
-		F19AFEA217A9ED247029AC13 /* FlowStatsPublisher.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E914F615B410FB28746CD9 /* FlowStatsPublisher.swift */; };
-		F63F4BC2857799D8708BF3C8 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 489E335D1DA9DB83998CD673 /* Cocoa.framework */; };
-		F975D2691E6E1ED7062EC6A8 /* BondedScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3E371BACAEAD7EEEF86537F /* BondedScheduler.swift */; };
-		FE727D979D884279F8E3FAF9 /* ArcaneDispatchTunnel.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 9DEDA2B3EC537C00712C5C5E /* ArcaneDispatchTunnel.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		0D197B7F3987AE245173B190 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 33CC10E52044A3C60003C045 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = 72FDA6B3C56F7343E9D537BC;
-			remoteInfo = ArcaneDispatchTunnel;
-		};
 		331C80D9294CF71000263BE5 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 33CC10E52044A3C60003C045 /* Project object */;
@@ -93,31 +64,19 @@
 			name = "Bundle Framework";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		757E8DAD53610486F65D18D2 /* Embed App Extensions */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 13;
-			files = (
-				FE727D979D884279F8E3FAF9 /* ArcaneDispatchTunnel.appex in Embed App Extensions */,
-			);
-			name = "Embed App Extensions";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		0F66728B7D46898D7C8AF8F8 /* PacketTunnelProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PacketTunnelProvider.swift; sourceTree = "<group>"; };
 		12E0F25C77E3B72F1DE28E08 /* Pods-Runner.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.debug.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.debug.xcconfig"; sourceTree = "<group>"; };
-		13758BAA4EB03E41437FB2D9 /* BondedModes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BondedModes.swift; sourceTree = "<group>"; };
-		1D1CEA6D55C409975A8BBFAC /* Noise.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Noise.swift; sourceTree = "<group>"; };
-		28684E6A386A9DAC0A73B293 /* ArcaneDispatchTunnel.entitlements */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.entitlements; path = ArcaneDispatchTunnel.entitlements; sourceTree = "<group>"; };
-		29BE5CDEFDE225002C2B67EC /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
 		331C80D5294CF71000263BE5 /* RunnerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RunnerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		331C80D7294CF71000263BE5 /* RunnerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerTests.swift; sourceTree = "<group>"; };
 		333000ED22D3DE5D00554162 /* Warnings.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Warnings.xcconfig; sourceTree = "<group>"; };
 		335BBD1A22A9A15E00E9071D /* GeneratedPluginRegistrant.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = GeneratedPluginRegistrant.swift; sourceTree = "<group>"; };
 		33AA00002044A3C60003A001 /* DispatchTrayController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DispatchTrayController.swift; sourceTree = "<group>"; };
+		5A11A11100000000F0001001 /* TunnelManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelManager.swift; sourceTree = "<group>"; };
+		5A11A11300000000F0001002 /* PairChannelHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairChannelHandler.swift; sourceTree = "<group>"; };
+		5A11A11500000000F0001003 /* PairedNetworkService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairedNetworkService.swift; sourceTree = "<group>"; };
+		5A11A11700000000F0001004 /* NetworkNamingHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkNamingHandler.swift; sourceTree = "<group>"; };
 		33CC10ED2044A3C60003C045 /* ArcaneDispatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ArcaneDispatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		33CC10F02044A3C60003C045 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		33CC10F22044A3C60003C045 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = Runner/Assets.xcassets; sourceTree = "<group>"; };
@@ -130,38 +89,15 @@
 		33E51913231747F40026EE4D /* DebugProfile.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = DebugProfile.entitlements; sourceTree = "<group>"; };
 		33E51914231749380026EE4D /* Release.entitlements */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.entitlements; path = Release.entitlements; sourceTree = "<group>"; };
 		33E5194F232828860026EE4D /* AppInfo.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = AppInfo.xcconfig; sourceTree = "<group>"; };
-		3BD54A4D62ABD2F0AAA8A00E /* PacketPump.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PacketPump.swift; sourceTree = "<group>"; };
-		3DC134CB37358DEAE2D0911E /* PolicyStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PolicyStore.swift; sourceTree = "<group>"; };
-		3E135428F1B8CF1EBA6A54BE /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		459F629E6502BC9482D1FD1E /* Pods_Runner.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_Runner.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		45F403F7FD554D261B195237 /* Pods-RunnerTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.debug.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.debug.xcconfig"; sourceTree = "<group>"; };
-		489E335D1DA9DB83998CD673 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.0.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
-		4CB1B01E184E900757618989 /* BondedFraming.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BondedFraming.swift; sourceTree = "<group>"; };
-		5A11A11100000000F0001001 /* TunnelManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelManager.swift; sourceTree = "<group>"; };
-		5A11A11300000000F0001002 /* PairChannelHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairChannelHandler.swift; sourceTree = "<group>"; };
-		5A11A11500000000F0001003 /* PairedNetworkService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairedNetworkService.swift; sourceTree = "<group>"; };
-		5A11A11700000000F0001004 /* NetworkNamingHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkNamingHandler.swift; sourceTree = "<group>"; };
-		5A5D2BC43E04EE575C2752E6 /* IPPacket.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = IPPacket.swift; path = IPPacket.swift; sourceTree = "<group>"; };
-		5BC5D362221243186DDBCD18 /* KeychainKeyStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeychainKeyStore.swift; sourceTree = "<group>"; };
 		7AFA3C8E1D35360C0083082E /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
-		85B14F0EC93E690A20CD36A7 /* ProtocolLadder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ProtocolLadder.swift; sourceTree = "<group>"; };
 		8976B3B42566989E45B8B6D7 /* Pods-RunnerTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.release.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.release.xcconfig"; sourceTree = "<group>"; };
 		9740EEB21CF90195004384FC /* Debug.xcconfig */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
-		9DEDA2B3EC537C00712C5C5E /* ArcaneDispatchTunnel.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ArcaneDispatchTunnel.appex; sourceTree = BUILT_PRODUCTS_DIR; };
-		9E491756D35D2E33AB5415BB /* BondedReassembler.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BondedReassembler.swift; sourceTree = "<group>"; };
-		A2E914F615B410FB28746CD9 /* FlowStatsPublisher.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FlowStatsPublisher.swift; sourceTree = "<group>"; };
 		A3B4B96753892DA4F1A78602 /* Pods-Runner.profile.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.profile.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.profile.xcconfig"; sourceTree = "<group>"; };
 		AA0245990BDE90BC56A4E117 /* Pods_RunnerTests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_RunnerTests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
-		AF59C80DA82F2E05527F0DF7 /* PolicyEngine.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PolicyEngine.swift; sourceTree = "<group>"; };
-		BFF8563B78B018EF62C4F0F5 /* FlowTracker.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FlowTracker.swift; sourceTree = "<group>"; };
-		C2F29E1C00529D46A87120C9 /* Replay.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Replay.swift; sourceTree = "<group>"; };
-		C3E371BACAEAD7EEEF86537F /* BondedScheduler.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BondedScheduler.swift; sourceTree = "<group>"; };
-		C4D99C8767D5D40973ADEED7 /* BondedClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BondedClient.swift; sourceTree = "<group>"; };
 		CEDD76E44562EEDD6FC01FBD /* Pods-RunnerTests.profile.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.profile.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.profile.xcconfig"; sourceTree = "<group>"; };
 		CFCD491EF67AFA89D2268AF6 /* Pods-Runner.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.release.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.release.xcconfig"; sourceTree = "<group>"; };
-		D3F2C12C2ECAFECF70A0E089 /* FlowForwarder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FlowForwarder.swift; path = FlowForwarder.swift; sourceTree = "<group>"; };
-		EE3EDF8732E849829078CBC6 /* Seal.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Seal.swift; sourceTree = "<group>"; };
-		FA6EB7E512C97CB73849BF38 /* StreamingClassifier.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StreamingClassifier.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -181,40 +117,9 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		57F0F7008F9E279875D5E56E /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				F63F4BC2857799D8708BF3C8 /* Cocoa.framework in Frameworks */,
-				C5738EA73E64FE3CC8FFDCE6 /* NetworkExtension.framework in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		0FED91D3F42B15E66DC7A26A /* Engine */ = {
-			isa = PBXGroup;
-			children = (
-				A2E914F615B410FB28746CD9 /* FlowStatsPublisher.swift */,
-				BFF8563B78B018EF62C4F0F5 /* FlowTracker.swift */,
-				3BD54A4D62ABD2F0AAA8A00E /* PacketPump.swift */,
-				AF59C80DA82F2E05527F0DF7 /* PolicyEngine.swift */,
-				3DC134CB37358DEAE2D0911E /* PolicyStore.swift */,
-				5A5D2BC43E04EE575C2752E6 /* IPPacket.swift */,
-				D3F2C12C2ECAFECF70A0E089 /* FlowForwarder.swift */,
-			);
-			path = Engine;
-			sourceTree = "<group>";
-		};
-		2497CF3966853EC0CEE0E1DD /* OS X */ = {
-			isa = PBXGroup;
-			children = (
-				489E335D1DA9DB83998CD673 /* Cocoa.framework */,
-			);
-			name = "OS X";
-			sourceTree = "<group>";
-		};
 		331C80D6294CF71000263BE5 /* RunnerTests */ = {
 			isa = PBXGroup;
 			children = (
@@ -243,7 +148,6 @@
 				33CC10EE2044A3C60003C045 /* Products */,
 				D73912EC22F37F3D000D13A0 /* Frameworks */,
 				5F67DB7B64DFA7CA492DE998 /* Pods */,
-				8E1E16AE8FBFEDEE19438338 /* ArcaneDispatchTunnel */,
 			);
 			sourceTree = "<group>";
 		};
@@ -252,7 +156,6 @@
 			children = (
 				33CC10ED2044A3C60003C045 /* ArcaneDispatch.app */,
 				331C80D5294CF71000263BE5 /* RunnerTests.xctest */,
-				9DEDA2B3EC537C00712C5C5E /* ArcaneDispatchTunnel.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -310,59 +213,11 @@
 			path = Pods;
 			sourceTree = "<group>";
 		};
-		6F2092F81452384A955CA9CE /* Bonded */ = {
-			isa = PBXGroup;
-			children = (
-				C4D99C8767D5D40973ADEED7 /* BondedClient.swift */,
-				4CB1B01E184E900757618989 /* BondedFraming.swift */,
-				13758BAA4EB03E41437FB2D9 /* BondedModes.swift */,
-				9E491756D35D2E33AB5415BB /* BondedReassembler.swift */,
-				C3E371BACAEAD7EEEF86537F /* BondedScheduler.swift */,
-				85B14F0EC93E690A20CD36A7 /* ProtocolLadder.swift */,
-			);
-			path = Bonded;
-			sourceTree = "<group>";
-		};
-		8E1E16AE8FBFEDEE19438338 /* ArcaneDispatchTunnel */ = {
-			isa = PBXGroup;
-			children = (
-				6F2092F81452384A955CA9CE /* Bonded */,
-				C16967FA4A11306A4EFA33DA /* Crypto */,
-				0FED91D3F42B15E66DC7A26A /* Engine */,
-				0F66728B7D46898D7C8AF8F8 /* PacketTunnelProvider.swift */,
-				BC2950F414767AB9CD39415C /* QoS */,
-				3E135428F1B8CF1EBA6A54BE /* Info.plist */,
-				28684E6A386A9DAC0A73B293 /* ArcaneDispatchTunnel.entitlements */,
-			);
-			path = ArcaneDispatchTunnel;
-			sourceTree = "<group>";
-		};
-		BC2950F414767AB9CD39415C /* QoS */ = {
-			isa = PBXGroup;
-			children = (
-				FA6EB7E512C97CB73849BF38 /* StreamingClassifier.swift */,
-			);
-			path = QoS;
-			sourceTree = "<group>";
-		};
-		C16967FA4A11306A4EFA33DA /* Crypto */ = {
-			isa = PBXGroup;
-			children = (
-				5BC5D362221243186DDBCD18 /* KeychainKeyStore.swift */,
-				1D1CEA6D55C409975A8BBFAC /* Noise.swift */,
-				C2F29E1C00529D46A87120C9 /* Replay.swift */,
-				EE3EDF8732E849829078CBC6 /* Seal.swift */,
-			);
-			path = Crypto;
-			sourceTree = "<group>";
-		};
 		D73912EC22F37F3D000D13A0 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
 				459F629E6502BC9482D1FD1E /* Pods_Runner.framework */,
 				AA0245990BDE90BC56A4E117 /* Pods_RunnerTests.framework */,
-				2497CF3966853EC0CEE0E1DD /* OS X */,
-				29BE5CDEFDE225002C2B67EC /* NetworkExtension.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -397,7 +252,6 @@
 				33CC10E92044A3C60003C045 /* Sources */,
 				33CC10EA2044A3C60003C045 /* Frameworks */,
 				33CC10EB2044A3C60003C045 /* Resources */,
-				757E8DAD53610486F65D18D2 /* Embed App Extensions */,
 				33CC110E2044A8840003C045 /* Bundle Framework */,
 				3399D490228B24CF009A79C7 /* ShellScript */,
 				316E2F21ADF31806DB16050D /* [CP] Embed Pods Frameworks */,
@@ -406,29 +260,11 @@
 			);
 			dependencies = (
 				33CC11202044C79F0003C045 /* PBXTargetDependency */,
-				C131500502B5FC582A59C3B1 /* PBXTargetDependency */,
 			);
 			name = Runner;
 			productName = Runner;
 			productReference = 33CC10ED2044A3C60003C045 /* ArcaneDispatch.app */;
 			productType = "com.apple.product-type.application";
-		};
-		72FDA6B3C56F7343E9D537BC /* ArcaneDispatchTunnel */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 64B0E915A7D32CB90D35CF07 /* Build configuration list for PBXNativeTarget "ArcaneDispatchTunnel" */;
-			buildPhases = (
-				6DD7AB779912868D3207DBF4 /* Sources */,
-				57F0F7008F9E279875D5E56E /* Frameworks */,
-				1FC795AF56E105196F2DA7A0 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = ArcaneDispatchTunnel;
-			productName = ArcaneDispatchTunnel;
-			productReference = 9DEDA2B3EC537C00712C5C5E /* ArcaneDispatchTunnel.appex */;
-			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -448,6 +284,7 @@
 					33CC10EC2044A3C60003C045 = {
 						CreatedOnToolsVersion = 9.2;
 						LastSwiftMigration = 1100;
+						ProvisioningStyle = Automatic;
 						SystemCapabilities = {
 							com.apple.Sandbox = {
 								enabled = 1;
@@ -476,19 +313,11 @@
 				33CC10EC2044A3C60003C045 /* Runner */,
 				331C80D4294CF70F00263BE5 /* RunnerTests */,
 				33CC111A2044C6BA0003C045 /* Flutter Assemble */,
-				72FDA6B3C56F7343E9D537BC /* ArcaneDispatchTunnel */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		1FC795AF56E105196F2DA7A0 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		331C80D3294CF70F00263BE5 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -633,32 +462,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		6DD7AB779912868D3207DBF4 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				195C5FDDB011993210E50344 /* BondedClient.swift in Sources */,
-				1842DF71713E19052B016F2B /* BondedFraming.swift in Sources */,
-				C4F6E6B11E44F66D503F59E9 /* BondedModes.swift in Sources */,
-				6E6E7AB06B98944EC80C3A7E /* BondedReassembler.swift in Sources */,
-				F975D2691E6E1ED7062EC6A8 /* BondedScheduler.swift in Sources */,
-				289B0F8555128A0D9286D488 /* ProtocolLadder.swift in Sources */,
-				AEC665EA15B3B85FCFAA5711 /* KeychainKeyStore.swift in Sources */,
-				23CA7A06139D8C90F904CD12 /* Noise.swift in Sources */,
-				DFAA6EA0D86CE75140DFD43E /* Replay.swift in Sources */,
-				1119004325BD19B1011B7429 /* Seal.swift in Sources */,
-				F19AFEA217A9ED247029AC13 /* FlowStatsPublisher.swift in Sources */,
-				71E95F0E1D8BA4059FBC1D1B /* FlowTracker.swift in Sources */,
-				D35BF7410F527DBEA4C8FCEE /* PacketPump.swift in Sources */,
-				4B24A3F0DB8A3F20BA94813F /* PolicyEngine.swift in Sources */,
-				565486931F73FA93ECE0737A /* PolicyStore.swift in Sources */,
-				B0CA5B1C629253FB9A1EF037 /* PacketTunnelProvider.swift in Sources */,
-				DC623CC90BAE164FF68D0B30 /* StreamingClassifier.swift in Sources */,
-				1D7D0172BF8EDF441F6FF0E0 /* IPPacket.swift in Sources */,
-				DB9579ED74FAD2A1D263602B /* FlowForwarder.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -671,12 +474,6 @@
 			isa = PBXTargetDependency;
 			target = 33CC111A2044C6BA0003C045 /* Flutter Assemble */;
 			targetProxy = 33CC111F2044C79F0003C045 /* PBXContainerItemProxy */;
-		};
-		C131500502B5FC582A59C3B1 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			name = ArcaneDispatchTunnel;
-			target = 72FDA6B3C56F7343E9D537BC /* ArcaneDispatchTunnel */;
-			targetProxy = 0D197B7F3987AE245173B190 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -693,35 +490,6 @@
 /* End PBXVariantGroup section */
 
 /* Begin XCBuildConfiguration section */
-		22C33AA653AEFD4F1CE2B7B7 /* Profile */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				CLANG_ENABLE_OBJC_ARC = YES;
-				CODE_SIGN_ENTITLEMENTS = ArcaneDispatchTunnel/ArcaneDispatchTunnel.entitlements;
-				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEAD_CODE_STRIPPING = YES;
-				DEVELOPMENT_TEAM = RK2CYG6XRV;
-				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = ArcaneDispatchTunnel/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-					"@executable_path/../../../../Frameworks",
-				);
-				MACOSX_DEPLOYMENT_TARGET = 11.0;
-				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = art.arcane.ArcaneDispatch.tunnel;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = macosx;
-				SKIP_INSTALL = YES;
-				SWIFT_VERSION = 5.0;
-			};
-			name = Profile;
-		};
 		331C80DB294CF71000263BE5 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 45F403F7FD554D261B195237 /* Pods-RunnerTests.debug.xcconfig */;
@@ -823,7 +591,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = Runner/DebugProfile.entitlements;
-				CODE_SIGN_IDENTITY = "Apple Development";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -958,7 +725,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = Runner/DebugProfile.entitlements;
-				CODE_SIGN_IDENTITY = "Apple Development";
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -1011,64 +777,6 @@
 			};
 			name = Release;
 		};
-		89CAD5C5EB197057308FBBC8 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				CLANG_ENABLE_OBJC_ARC = YES;
-				CODE_SIGN_ENTITLEMENTS = ArcaneDispatchTunnel/ArcaneDispatchTunnel.entitlements;
-				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEAD_CODE_STRIPPING = YES;
-				DEVELOPMENT_TEAM = RK2CYG6XRV;
-				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = ArcaneDispatchTunnel/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-					"@executable_path/../../../../Frameworks",
-				);
-				MACOSX_DEPLOYMENT_TARGET = 11.0;
-				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = art.arcane.ArcaneDispatch.tunnel;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = macosx;
-				SKIP_INSTALL = YES;
-				SWIFT_VERSION = 5.0;
-			};
-			name = Debug;
-		};
-		C3378FBD7144B243DC723436 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				CLANG_ENABLE_OBJC_ARC = YES;
-				CODE_SIGN_ENTITLEMENTS = ArcaneDispatchTunnel/ArcaneDispatchTunnel.entitlements;
-				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEAD_CODE_STRIPPING = YES;
-				DEVELOPMENT_TEAM = RK2CYG6XRV;
-				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = ArcaneDispatchTunnel/Info.plist;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-					"@executable_path/../../../../Frameworks",
-				);
-				MACOSX_DEPLOYMENT_TARGET = 11.0;
-				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = art.arcane.ArcaneDispatch.tunnel;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = macosx;
-				SKIP_INSTALL = YES;
-				SWIFT_VERSION = 5.0;
-			};
-			name = Release;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1108,16 +816,6 @@
 				33CC111C2044C6BA0003C045 /* Debug */,
 				33CC111D2044C6BA0003C045 /* Release */,
 				338D0CEB231458BD00FA5F75 /* Profile */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		64B0E915A7D32CB90D35CF07 /* Build configuration list for PBXNativeTarget "ArcaneDispatchTunnel" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				C3378FBD7144B243DC723436 /* Release */,
-				89CAD5C5EB197057308FBBC8 /* Debug */,
-				22C33AA653AEFD4F1CE2B7B7 /* Profile */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

@@ -36,6 +36,11 @@ class TunnelTransport implements Transport {
   /// hammering the platform side.
   final Duration statusPollInterval;
 
+  /// How often to drain per-link byte counters from the running extension.
+  /// 1 s matches the SOCKS transport's emit cadence so the bond graphic
+  /// animates at the same rate on both transports.
+  final Duration throughputPollInterval;
+
   final LatestStream<TransportStatus> _state = LatestStream<TransportStatus>(
     TransportStatus(state: TransportState.stopped),
   );
@@ -46,14 +51,23 @@ class TunnelTransport implements Transport {
       StreamController<ProxyEvent>.broadcast();
 
   Timer? _statusTimer;
+  Timer? _throughputTimer;
   TunnelStatus _lastStatus = TunnelStatus.unknown();
   bool _disposed = false;
   StreamSubscription<FlowStat>? _flowSub;
+
+  /// Cumulative bytes per link since [start]. Returned verbatim by
+  /// [dataUsedSnapshot] so the UI's "Total used this cycle" reading
+  /// reflects actual extension traffic, not just probe estimates.
+  final Map<String, int> _totalIn = <String, int>{};
+  final Map<String, int> _totalOut = <String, int>{};
+  DateTime? _lastDrainAt;
 
   TunnelTransport({
     TunnelChannel? channel,
     FlowStatsReader? flowStatsReader,
     this.statusPollInterval = const Duration(seconds: 1),
+    this.throughputPollInterval = const Duration(seconds: 1),
   })  : channel = channel ?? TunnelChannel(),
         flowStatsReader = flowStatsReader ?? FlowStatsReader(channel: channel);
 
@@ -132,8 +146,14 @@ class TunnelTransport implements Transport {
       //    polling timer keeps running while the tunnel is up so we catch
       //    Wi-Fi-handoff "reasserting" transitions in [TransportState.starting].
       _scheduleStatusPolling();
+      // 4. Drain per-link byte counters on a timer so the bond graphic
+      //    animates from real traffic. We start it eagerly even before
+      //    `connected` because the extension's accumulators are already
+      //    valid as soon as packets start flowing — there's no harm in
+      //    polling early and getting zeros.
+      _scheduleThroughputPolling();
 
-      // 4. Spin up the flow-stats reader so the UI gets live per-connection
+      // 5. Spin up the flow-stats reader so the UI gets live per-connection
       //    rows as the extension publishes them. Safe to start even when
       //    the file doesn't exist yet — the reader will pick it up on the
       //    next poll once the extension creates it.
@@ -160,6 +180,11 @@ class TunnelTransport implements Transport {
   Future<void> stop() async {
     _statusTimer?.cancel();
     _statusTimer = null;
+    _throughputTimer?.cancel();
+    _throughputTimer = null;
+    _totalIn.clear();
+    _totalOut.clear();
+    _lastDrainAt = null;
     await _detachFlowReader();
     _state.add(TransportStatus(state: TransportState.stopping));
     try {
@@ -204,6 +229,19 @@ class TunnelTransport implements Transport {
   }
 
   @override
+  Map<String, int> dataUsedSnapshot() {
+    // Sum every link's totalIn + totalOut into one map. Keeps the API
+    // shape simple — callers that want directional splits can subscribe
+    // to [metrics] which carries the per-direction breakdown.
+    Map<String, int> out = <String, int>{};
+    Set<String> ids = <String>{..._totalIn.keys, ..._totalOut.keys};
+    for (String id in ids) {
+      out[id] = (_totalIn[id] ?? 0) + (_totalOut[id] ?? 0);
+    }
+    return out;
+  }
+
+  @override
   Future<void> dispose() async {
     if (_disposed) {
       return;
@@ -211,6 +249,8 @@ class TunnelTransport implements Transport {
     _disposed = true;
     _statusTimer?.cancel();
     _statusTimer = null;
+    _throughputTimer?.cancel();
+    _throughputTimer = null;
     await _detachFlowReader();
     // Tear the reader itself down so its file handle releases even if it
     // was never started (production callers always own one whether or not
@@ -276,6 +316,66 @@ class TunnelTransport implements Transport {
     } catch (_) {
       // Swallow — the next tick retries. Reporting every transient hiccup
       // to the user would be noisy.
+    }
+  }
+
+  /// Drain throughput counters from the extension on a timer. Each
+  /// drain returns the bytes accumulated since the previous call, which
+  /// we turn into a per-direction bytes-per-second rate using elapsed
+  /// wall-clock time. Each link gets one [LinkMetric] event on
+  /// [metrics] so the bond graphic's per-spoke flow animates from real
+  /// traffic.
+  void _scheduleThroughputPolling() {
+    _throughputTimer?.cancel();
+    _lastDrainAt = DateTime.now();
+    _throughputTimer = Timer.periodic(throughputPollInterval, (Timer _) {
+      unawaited(_pollThroughput());
+    });
+  }
+
+  Future<void> _pollThroughput() async {
+    if (_disposed) {
+      return;
+    }
+    List<TunnelThroughputSample> samples;
+    try {
+      samples = await channel.getThroughput();
+    } on TunnelUnavailableException {
+      _throughputTimer?.cancel();
+      _throughputTimer = null;
+      return;
+    } catch (_) {
+      // Transient — retry on next tick. The extension might be in the
+      // middle of a state transition.
+      return;
+    }
+    DateTime now = DateTime.now();
+    Duration since = _lastDrainAt != null
+        ? now.difference(_lastDrainAt!)
+        : throughputPollInterval;
+    _lastDrainAt = now;
+    // Guard against the first tick (which could report a huge delta if
+    // the timer is wildly off) and against jittery wall clocks.
+    double seconds = since.inMicroseconds / Duration.microsecondsPerSecond;
+    if (seconds < 0.05) {
+      seconds = throughputPollInterval.inMicroseconds /
+          Duration.microsecondsPerSecond;
+    }
+    for (TunnelThroughputSample sample in samples) {
+      double bpsIn = sample.bytesIn / seconds;
+      double bpsOut = sample.bytesOut / seconds;
+      _totalIn[sample.linkId] =
+          (_totalIn[sample.linkId] ?? 0) + sample.bytesIn;
+      _totalOut[sample.linkId] =
+          (_totalOut[sample.linkId] ?? 0) + sample.bytesOut;
+      _metrics.add(LinkMetric(
+        linkId: sample.linkId,
+        rttMs: 0,
+        loss: 0,
+        bpsIn: bpsIn,
+        bpsOut: bpsOut,
+        capturedAt: now,
+      ));
     }
   }
 

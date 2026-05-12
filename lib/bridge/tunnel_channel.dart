@@ -319,6 +319,43 @@ class TunnelChannel {
       throw TunnelUnavailableException();
     }
   }
+
+  /// Drain the running extension's per-link byte counters since the
+  /// previous call. The platform side returns a list of objects shaped
+  /// `{linkId: String, bytesIn: int, bytesOut: int}`. Empty when the
+  /// tunnel isn't connected (the caller treats that as "no flow yet").
+  ///
+  /// [TunnelTransport] polls this on a 1 s timer and emits one
+  /// [LinkMetric] per row with the bytes-per-second rate, which drives
+  /// the bond-graphic particle flow and the per-network throughput
+  /// chips. Cheap when nothing's moving — the extension returns the
+  /// drained map without allocating per-entry.
+  Future<List<TunnelThroughputSample>> getThroughput() async {
+    try {
+      Object? response = await _channel.invokeMethod<Object?>('getThroughput');
+      if (response is! List) {
+        return const <TunnelThroughputSample>[];
+      }
+      List<TunnelThroughputSample> out = <TunnelThroughputSample>[];
+      for (Object? raw in response) {
+        if (raw is! Map) {
+          continue;
+        }
+        String? linkId = raw['linkId'] as String?;
+        if (linkId == null || linkId.isEmpty) {
+          continue;
+        }
+        out.add(TunnelThroughputSample(
+          linkId: linkId,
+          bytesIn: (raw['bytesIn'] as num?)?.toInt() ?? 0,
+          bytesOut: (raw['bytesOut'] as num?)?.toInt() ?? 0,
+        ));
+      }
+      return out;
+    } on MissingPluginException {
+      throw TunnelUnavailableException();
+    }
+  }
 }
 
 /// Thrown when the platform side of the tunnel bridge isn't reachable — e.g.
@@ -361,4 +398,34 @@ class TunnelServerConfig {
   /// Convenience helper for the UI: are we ready to use the bonded
   /// transport, or should we keep the user on local mode?
   bool get isConfigured => endpoint.isNotEmpty && tokenSet;
+}
+
+/// One row of the extension's drained throughput accumulator. Returned
+/// by [TunnelChannel.getThroughput] and consumed by [TunnelTransport],
+/// which turns the bytes-since-last-drain into bytes-per-second and
+/// emits a [LinkMetric] per link so the bond graphic and per-network
+/// chips animate from real packet traffic.
+class TunnelThroughputSample {
+  /// Identifier of the bond link these bytes were accounted to. Matches
+  /// `Link.id` in the active policy snapshot.
+  final String linkId;
+
+  /// Bytes the forwarder received *from* the network (downloads) for
+  /// this link since the previous drain. Always >= 0.
+  final int bytesIn;
+
+  /// Bytes the forwarder sent *to* the network (uploads) for this link
+  /// since the previous drain. Always >= 0.
+  final int bytesOut;
+
+  const TunnelThroughputSample({
+    required this.linkId,
+    required this.bytesIn,
+    required this.bytesOut,
+  });
+
+  @override
+  String toString() {
+    return 'TunnelThroughputSample(linkId=$linkId, in=$bytesIn, out=$bytesOut)';
+  }
 }

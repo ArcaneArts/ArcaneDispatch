@@ -56,6 +56,13 @@ final class FlowStatsPublisher {
 
     private var fileHandle: FileHandle?
     private var fileURL: URL?
+    /// Sticky flag set to true on the first `openIfNeeded` attempt that
+    /// failed (e.g. the App Group container is unavailable because the
+    /// entitlement was stripped). We never retry once flipped — retrying
+    /// from `publish()` was the cause of the `dispatch_sync called on
+    /// queue already owned by current thread` crash because `publish()`
+    /// runs `openIfNeeded()` from inside the same serial queue.
+    private var openAttempted: Bool = false
     /// Monotonic write counter. Slot for a given event is `writeIndex % capacity`.
     private var writeIndex: UInt64 = 0
     private let queue = DispatchQueue(label: "art.arcane.dispatch.tunnel.flowstats", qos: .utility)
@@ -75,52 +82,63 @@ final class FlowStatsPublisher {
     }
 
     /// Lazy-open the ring buffer and write its header if the file is new or
-    /// the version stamp doesn't match. Safe to call repeatedly.
+    /// the version stamp doesn't match. Safe to call from anywhere; takes
+    /// the internal queue. Callers that already hold the queue must use
+    /// `openIfNeededLocked()` directly to avoid `dispatch_sync` on the
+    /// queue that owns the current thread.
     func openIfNeeded() {
-        queue.sync {
-            if fileHandle != nil { return }
-            guard let container = FileManager.default.containerURL(
-                forSecurityApplicationGroupIdentifier: appGroupId
-            ) else {
-                log.error("flow_stats: App Group container missing for \(self.appGroupId)")
-                return
-            }
-            let url = container.appendingPathComponent(fileName)
-            let totalSize = FlowStatsPublisher.headerSize + Int(capacity) * FlowStatsPublisher.recordSize
+        queue.sync { self.openIfNeededLocked() }
+    }
 
-            let needsInit = !FileManager.default.fileExists(atPath: url.path)
-            if needsInit {
-                FileManager.default.createFile(atPath: url.path, contents: nil)
-            }
-            guard let handle = try? FileHandle(forUpdating: url) else {
-                log.error("flow_stats: failed to open \(url.path) for writing")
-                return
-            }
-            // Pre-allocate to full size so reader mmap doesn't trip over a
-            // short file.
-            do {
-                try handle.truncate(atOffset: UInt64(totalSize))
-            } catch {
-                log.error("flow_stats: truncate failed: \(error.localizedDescription)")
-            }
-            fileHandle = handle
-            fileURL = url
-            if needsInit {
-                writeHeader()
-            } else {
-                // Existing file — read writeIndex back so subsequent records
-                // append after the last write. If the header is stale or
-                // wrong-version we reset cold.
-                if !validateHeader() {
-                    log.notice("flow_stats: stale header, reinitializing")
-                    writeHeader()
-                    writeIndex = 0
-                } else {
-                    writeIndex = readWriteIndex()
-                }
-            }
-            log.info("flow_stats: opened \(url.path) (capacity=\(self.capacity), writeIndex=\(self.writeIndex))")
+    /// Same as `openIfNeeded()` but assumes the caller is already executing
+    /// on `queue`. After the first attempt — successful or not — this is a
+    /// no-op for the lifetime of the publisher; we never retry, so a missing
+    /// App Group entitlement is a one-shot failure instead of a hot loop.
+    private func openIfNeededLocked() {
+        if fileHandle != nil { return }
+        if openAttempted { return }
+        openAttempted = true
+        guard let container = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: appGroupId
+        ) else {
+            log.error("flow_stats: App Group container missing for \(self.appGroupId); flow stats disabled")
+            return
         }
+        let url = container.appendingPathComponent(fileName)
+        let totalSize = FlowStatsPublisher.headerSize + Int(capacity) * FlowStatsPublisher.recordSize
+
+        let needsInit = !FileManager.default.fileExists(atPath: url.path)
+        if needsInit {
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+        }
+        guard let handle = try? FileHandle(forUpdating: url) else {
+            log.error("flow_stats: failed to open \(url.path) for writing")
+            return
+        }
+        // Pre-allocate to full size so reader mmap doesn't trip over a
+        // short file.
+        do {
+            try handle.truncate(atOffset: UInt64(totalSize))
+        } catch {
+            log.error("flow_stats: truncate failed: \(error.localizedDescription)")
+        }
+        fileHandle = handle
+        fileURL = url
+        if needsInit {
+            writeHeader()
+        } else {
+            // Existing file — read writeIndex back so subsequent records
+            // append after the last write. If the header is stale or
+            // wrong-version we reset cold.
+            if !validateHeader() {
+                log.notice("flow_stats: stale header, reinitializing")
+                writeHeader()
+                writeIndex = 0
+            } else {
+                writeIndex = readWriteIndex()
+            }
+        }
+        log.info("flow_stats: opened \(url.path) (capacity=\(self.capacity), writeIndex=\(self.writeIndex))")
     }
 
     /// Append one event to the ring buffer. Fire-and-forget; the queue
@@ -129,7 +147,12 @@ final class FlowStatsPublisher {
         queue.async { [weak self] in
             guard let self else { return }
             if self.fileHandle == nil {
-                self.openIfNeeded()
+                // We're already on `queue` — call the locked variant to
+                // avoid the recursive `dispatch_sync` that used to crash the
+                // tunnel extension whenever the App Group container was
+                // missing (no entitlement → openIfNeededLocked() bails fast
+                // but used to be retried on every publish).
+                self.openIfNeededLocked()
             }
             guard self.fileHandle != nil else { return }
             self.writeRecord(event: event)

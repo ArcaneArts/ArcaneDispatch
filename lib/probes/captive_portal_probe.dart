@@ -508,6 +508,12 @@ class CaptivePortalDetector {
       );
     }
     bool changed = state.observe(outcome, config.debounceCount);
+    // Re-check after the async probe returns. cancelTimer() may have
+    // fired while we were awaiting, in which case neither the periodic
+    // timer nor the broadcast stream are valid targets any more —
+    // calling _schedule() here would resurrect the timer the dispose
+    // path just cancelled.
+    if (_stopped) return;
     if (changed) {
       _schedule();
       if (!_ctrl.isClosed) {

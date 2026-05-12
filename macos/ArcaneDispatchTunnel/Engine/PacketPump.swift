@@ -15,12 +15,15 @@
 // * Honor kill-switch semantics: when the engine reports no eligible links
 //   and `killSwitch` is on, every outbound packet is dropped.
 //
-// Phase 7 will replace the per-flow socket bridge with the bonded transport;
-// for now we still drop the packet on the floor after picking the link, so
-// the tunnel doesn't actually relay traffic. The UI bookkeeping is fully
-// functional, though, and matches what Phase 7 will produce.
+// Phase 7+: the per-flow socket bridge in `FlowForwarder` now actually
+// relays traffic. For each packet we pick a link, then hand the packet
+// to the forwarder which opens an outbound `NWConnection` bound to the
+// link's interface, shuttles bytes both ways, and synthesizes reply
+// packets back into the TUN. The bonded debug encoder still mirrors
+// packets when enabled, but real delivery is the forwarder's job now.
 
 import Foundation
+import Network
 import NetworkExtension
 import OSLog
 
@@ -34,6 +37,13 @@ final class PacketPump {
     private let engine = PolicyEngine()
     private let publisher = FlowStatsPublisher()
     private var tracker: FlowTracker!
+    private let forwarder: FlowForwarder
+    /// Cached BSD device name → `NWInterface` for outbound link binding.
+    /// Refreshed on every policy/metric update via `NWPathMonitor`.
+    private var bsdToInterface: [String: NWInterface] = [:]
+    /// Long-lived monitor that feeds [bsdToInterface]. Kept here so a
+    /// single monitor covers the whole pump's lifetime.
+    private let pathMonitor = NWPathMonitor()
     private var policy: ExtensionPolicy
     /// Cached decision from the most recent `applyPolicy`. Re-evaluated only
     /// on policy reload — per-packet evaluation is too hot a path for the
@@ -64,6 +74,7 @@ final class PacketPump {
     init(packetFlow: NEPacketTunnelFlow, policy: ExtensionPolicy) {
         self.packetFlow = packetFlow
         self.policy = policy
+        self.forwarder = FlowForwarder(packetFlow: packetFlow, queue: queue)
         self.tracker = FlowTracker { [weak self] event in
             self?.publisher.publish(event)
         }
@@ -78,6 +89,8 @@ final class PacketPump {
             self.decision = self.engine.evaluate(policy: self.policy, metrics: self.metrics)
             self.rebuildBondedClientIfNeeded()
             self.scheduleSweep()
+            self.startPathMonitor()
+            self.rebuildLinkInterfaces()
             self.log.info("PacketPump: starting (eligible=\(self.decision.eligible.count), group=\(String(describing: self.decision.activeGroup)), bonded=\(self.policy.bondedTransport ?? false))")
             self.readLoop()
         }
@@ -90,6 +103,8 @@ final class PacketPump {
             self.running = false
             self.sweepTimer?.cancel()
             self.sweepTimer = nil
+            self.pathMonitor.cancel()
+            self.forwarder.shutdown()
             self.bondedClient?.dispose()
             self.bondedClient = nil
         }
@@ -104,6 +119,7 @@ final class PacketPump {
             self.decision = self.engine.evaluate(policy: next, metrics: self.metrics)
             self.rrCursor = 0
             self.rebuildBondedClientIfNeeded()
+            self.rebuildLinkInterfaces()
             self.log.info("PacketPump: policy applied (\(next.links.count) links, \(self.decision.eligible.count) eligible, bonded=\(next.bondedTransport ?? false))")
         }
     }
@@ -150,15 +166,22 @@ final class PacketPump {
         }
 
         for packet in packets {
-            // Observe — this both classifies and bookkeeps the flow.
-            _ = tracker.observe(packet: packet, direction: .outbound) { [weak self] _ in
+            // Observe — this both classifies and bookkeeps the flow,
+            // and returns the assigned link via [assignLink].
+            let flow = tracker.observe(packet: packet, direction: .outbound) { [weak self] _ in
                 return self?.assignLink() ?? ""
             }
-            // Phase 7: when the debug flag is on, mirror the packet through
-            // the bonded encoder so we can `OSLog`-inspect frames on real
-            // hardware. There's no server yet (Phase 8) — the encoded bytes
-            // are dropped after logging. The legacy per-flow forwarder
-            // remains in charge of actual delivery.
+            // Real forwarding: relay the packet through an outbound
+            // `NWConnection` bound to the flow's link. Without this the
+            // packets just get classified and dropped, which is why the
+            // tunnel previously felt like "Turning on the thing does
+            // not do anything" — packets went in and never came out.
+            let linkId = flow?.linkId ?? assignLink()
+            forwarder.forward(packet: packet, linkId: linkId)
+            // Phase 7: when the debug flag is on, mirror the packet
+            // through the bonded encoder so we can `OSLog`-inspect frames
+            // on real hardware. There's no server yet (Phase 8) — the
+            // encoded bytes are dropped after logging.
             if let client = bondedClient {
                 client.send(packet)
             }
@@ -282,5 +305,59 @@ final class PacketPump {
         }
         t.resume()
         sweepTimer = t
+    }
+
+    /// Watch the OS' network paths so we always know which `NWInterface`
+    /// corresponds to each BSD device name. The path monitor only fires
+    /// when something changes, so steady-state cost is zero. We use this
+    /// in [rebuildLinkInterfaces] to map link IDs (which carry BSD names)
+    /// onto the `NWInterface` instances the forwarder needs.
+    private func startPathMonitor() {
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+            self.queue.async {
+                var next: [String: NWInterface] = [:]
+                for iface in path.availableInterfaces {
+                    next[iface.name] = iface
+                }
+                self.bsdToInterface = next
+                self.rebuildLinkInterfaces()
+            }
+        }
+        pathMonitor.start(queue: queue)
+    }
+
+    /// Rebuild the forwarder's `linkId → NWInterface` map from the
+    /// current policy + path snapshot. Called on every policy change
+    /// and every path update. Cheap: just a dictionary build.
+    private func rebuildLinkInterfaces() {
+        var ifaces: [String: NWInterface] = [:]
+        var bsds: [String: String] = [:]
+        for slot in decision.eligible {
+            guard let bsd = slot.link.interfaceName, !bsd.isEmpty else { continue }
+            bsds[slot.link.id] = bsd
+            if let iface = bsdToInterface[bsd] {
+                ifaces[slot.link.id] = iface
+            }
+        }
+        forwarder.setLinkInterfaces(ifaces, bsdMap: bsds)
+    }
+
+    /// Snapshot of per-link bytes since the previous call. Drains the
+    /// forwarder accumulators and returns a serializable list the
+    /// container app fetches via `getThroughput` RPC. The container
+    /// turns the bytes-per-second deltas into `LinkMetric` events that
+    /// drive the UI's bond-graphic particle flow and bandwidth chips.
+    func drainThroughputForRPC() -> [[String: Any]] {
+        var out: [[String: Any]] = []
+        let snap = forwarder.drainThroughput()
+        for (linkId, bytes) in snap {
+            out.append([
+                "linkId": linkId,
+                "bytesIn": bytes.inBytes,
+                "bytesOut": bytes.outBytes,
+            ])
+        }
+        return out
     }
 }

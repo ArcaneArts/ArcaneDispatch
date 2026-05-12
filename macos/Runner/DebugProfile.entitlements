@@ -1,31 +1,55 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Debug-profile entitlements.
+  Debug-profile entitlements (Runner / container app).
 
-  The Network Extension + App Group + system-extension entitlements live in
-  Release.entitlements only. Those three keys are *restricted entitlements*
-  that require an Apple Developer Team provisioning profile to be present at
-  launch — with Flutter's default ad-hoc debug signing, AMFI SIGKILLs the
-  process before main() runs.
+  IMPORTANT: hardened-runtime relaxations (allow-jit,
+  allow-unsigned-executable-memory, disable-library-validation) are
+  INTENTIONALLY ABSENT — exactly the same constraint as Release.entitlements.
 
-  To exercise the Phase 5+ tunnel locally you must:
-    1. Enable the NetworkExtension + App Group capabilities for your team in
-       https://developer.apple.com/account.
-    2. Generate a Developer ID provisioning profile that includes them.
-    3. Set CODE_SIGN_IDENTITY + DEVELOPMENT_TEAM in Runner.xcodeproj and
-       copy Release.entitlements into this file (or build with --release).
+  Why: the dev portal App ID `art.arcane.ArcaneDispatch` has the Network
+  Extension capability enabled. Apple's auto-issued provisioning profile
+  therefore carries `com.apple.developer.system-extension.install`, and
+  AMFI's rule "Hardened Runtime relaxation entitlements disallowed on
+  System Extensions" applies to ANY binary launched under that profile —
+  including this Runner. Claiming `allow-jit` etc. causes the kernel to
+  refuse the launch with `POSIX 163 / Launchd job spawn failed`, which is
+  what IntelliJ's "Run" / "Debug" buttons surfaced as
+  `RBSRequestErrorDomain Code=5 Launch failed.`.
+
+  Trade-off: Dart's normal debug-mode JIT cannot run without these
+  entitlements. The app now launches successfully from IntelliJ /
+  flutter run, but use `--profile` for development:
+
+      flutter run -d macos --profile
+
+  Profile mode AOT-compiles Dart (no JIT needed), keeps DevTools /
+  observatory, and is otherwise indistinguishable from Debug for everyday
+  development. Hot-reload won't work in --profile, but the Tunnel-mode
+  feature itself fully works there.
+
+  To regain Debug-mode hot-reload (optional, not required for the app to
+  function), the dev portal App ID for `art.arcane.ArcaneDispatch` must
+  have the System Extensions capability REMOVED. See README troubleshooting.
+
+  Network-Extension entitlement is REQUIRED — without it
+  `NETunnelProviderManager.saveToPreferences` fails before macOS ever
+  shows the "ArcaneDispatch wants to add VPN configurations" dialog.
+
+  App Groups (`com.apple.security.application-groups`) is also absent —
+  the provisioning profile does not currently grant it. Policy and
+  server config are passed to the extension through
+  `NETunnelProviderProtocol.providerConfiguration` (see
+  `macos/Runner/TunnelManager.swift`).
 -->
 <plist version="1.0">
 <dict>
+	<key>com.apple.developer.networking.networkextension</key>
+	<array>
+		<string>packet-tunnel-provider</string>
+	</array>
 	<key>com.apple.security.app-sandbox</key>
 	<false/>
-	<key>com.apple.security.cs.allow-jit</key>
-	<true/>
-	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
-	<true/>
-	<key>com.apple.security.cs.disable-library-validation</key>
-	<true/>
 	<key>com.apple.security.network.client</key>
 	<true/>
 	<key>com.apple.security.network.server</key>

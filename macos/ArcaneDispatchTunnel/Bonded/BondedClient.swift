@@ -122,8 +122,8 @@ public final class BondedClient {
         self.queue = queue
         self.scheduler = scheduler ?? BondedScheduler()
         self.reassembler = reassembler ?? BondedReassembler(
-            gapTimeout: config.reassemblerGapTimeout,
             windowSize: config.reassemblerWindowSize,
+            gapTimeout: config.reassemblerGapTimeout,
             queue: queue
         )
         self.strategy = BondedModes.strategy(for: config.mode)

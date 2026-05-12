@@ -11,21 +11,23 @@
 // `lib/platform/network_naming_service.dart`.
 //
 // Implementation notes:
-//   * We shell out to `/usr/sbin/networksetup` rather than calling
-//     CoreWLAN's `CWInterface.ssid()` directly because the latter started
-//     requiring **Location Services** permission in macOS 14, and we don't
-//     want a "Dispatch wants to use your location" prompt just to read a
-//     network name. The `networksetup -getairportnetwork` path has no
-//     permission gate.
-//   * CoreWLAN is still used as a *fallback* and for richer per-interface
-//     attributes the shell can't expose (active channel, RSSI). Phase 15.+
-//     can read those for the per-link cards.
+//   * macOS 14+ gates the Wi-Fi SSID behind Location Services
+//     authorization, on **both** code paths (`CWInterface.ssid()` AND
+//     `networksetup -getairportnetwork`). We request `When In Use`
+//     authorization at app launch with a copy that explains we only
+//     read the SSID — no location data is collected.
+//   * Once the user has granted permission, `CWInterface.ssid()`
+//     returns the live SSID directly; we fall back to the
+//     `networksetup` shell route on the off-chance CoreWLAN is acting
+//     up for a particular adapter.
 //   * Output is intentionally JSON-serialisable so the channel can hand the
 //     list straight to Flutter without an extra encode step.
 
 import Cocoa
+import CoreLocation
 import CoreWLAN
 import FlutterMacOS
+import os.log
 
 /// Coarse kind used by the UI to pick icons and sort buckets. Mirrors
 /// `NamedInterfaceKind` on the Dart side.
@@ -48,11 +50,86 @@ private struct HardwarePort {
     let mac: String?      // colon-separated, may be nil for virtual ports
 }
 
-final class NetworkNamingHandler {
+/// One row from `networksetup -listnetworkserviceorder`. This is what
+/// System Settings → Network shows: the *saved* services, regardless of
+/// whether the hardware is currently attached.
+private struct NetworkService {
+    let serviceName: String   // "Wi-Fi", "iPhone USB", "USB 10/100/1000 LAN 2"
+    let hardwarePort: String  // "Wi-Fi", "iPhone USB", "com.connectify.Speedify"
+    let device: String        // "en0", "en8", "" for virtual VPN services
+    let disabled: Bool        // True iff the service is starred (* in the listing)
+
+    /// True for VPN-like services we don't want to surface as adoptable
+    /// networks. The signal: empty BSD device combined with a reverse-DNS
+    /// `hardwarePort` (`com.connectify.Speedify`, `ch.protonvpn.mac`,
+    /// `art.arcane.ArcaneDispatch`, …). Real network services either have
+    /// a BSD device or a human-readable port name.
+    var isVPNLike: Bool {
+        if !device.isEmpty { return false }
+        // No device and the port name looks like a bundle identifier.
+        let lp = hardwarePort.lowercased()
+        return lp.contains(".") && !lp.contains(" ")
+    }
+}
+
+final class NetworkNamingHandler: NSObject, CLLocationManagerDelegate {
     static let shared = NetworkNamingHandler()
 
     private let channelName = "art.arcane.dispatch/naming"
     private let networksetupPath = "/usr/sbin/networksetup"
+
+    /// Owns the Location permission lifecycle for CoreWLAN's SSID
+    /// readback. macOS 14+ requires `When In Use` authorization before
+    /// `CWInterface.ssid()` will return anything other than nil. The
+    /// permission flow:
+    ///
+    ///   1. On app launch we instantiate the manager + assign self as
+    ///      delegate. macOS checks the current authorization status.
+    ///   2. If still `.notDetermined`, we call
+    ///      `requestWhenInUseAuthorization` once. The user sees the
+    ///      standard system prompt with our `NSLocationUsageDescription`
+    ///      copy explaining we only need it for the Wi-Fi name.
+    ///   3. Once `authorizedAlways` or `authorizedWhenInUse` arrives via
+    ///      `locationManagerDidChangeAuthorization`, every subsequent
+    ///      SSID call hits CoreWLAN happy-path.
+    ///
+    /// We never start location updates — only the authorization is
+    /// needed for `ssid()`, so no power / privacy footprint beyond
+    /// "permission granted".
+    private let locationManager = CLLocationManager()
+
+    private override init() {
+        super.init()
+        locationManager.delegate = self
+        // Reading status synchronously is the documented way to drive
+        // the first-time prompt. The delegate callback fires on
+        // subsequent permission changes.
+        //
+        // We dispatch the actual `requestWhenInUseAuthorization` call
+        // onto the main runloop's next tick so the AppKit event loop is
+        // alive by the time macOS tries to surface the permission
+        // sheet. Calling it directly inside `init()` (which runs from
+        // `NetworkNamingHandler.shared` access during
+        // `applicationDidFinishLaunching`) sometimes drops the prompt
+        // on the floor under macOS 26 because the alert host hasn't
+        // attached to the app yet.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let status = self.locationManager.authorizationStatus
+            os_log("location: initial status=%{public}d", log: .default, type: .info, status.rawValue)
+            if status == .notDetermined {
+                os_log("location: requesting When-In-Use authorization", log: .default, type: .info)
+                self.locationManager.requestWhenInUseAuthorization()
+            } else if status == .denied || status == .restricted {
+                os_log("location: denied/restricted — Wi-Fi SSIDs will be unavailable. Grant access in System Settings > Privacy & Security > Location Services.", log: .default, type: .error)
+            }
+        }
+    }
+
+    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        let status = manager.authorizationStatus
+        os_log("location: authorization changed to %{public}d", log: .default, type: .info, status.rawValue)
+    }
 
     func register(with controller: FlutterViewController) {
         let channel = FlutterMethodChannel(
@@ -66,6 +143,8 @@ final class NetworkNamingHandler {
             switch call.method {
             case "list":
                 result(self.listInterfaces())
+            case "listKnownServices":
+                result(self.listKnownServices())
             case "ssid":
                 let args = call.arguments as? [String: Any]
                 let bsd = (args?["bsdName"] as? String) ?? ""
@@ -74,6 +153,53 @@ final class NetworkNamingHandler {
                 result(FlutterMethodNotImplemented)
             }
         }
+    }
+
+    /// Returns SAVED + AVAILABLE network services as System Settings →
+    /// Network displays them, NOT just the hardware ports that are
+    /// currently attached. The list includes:
+    ///
+    ///   * Wi-Fi (en0) — with current SSID when associated.
+    ///   * Ethernet adapters whether plugged in or not (the user can
+    ///     plug them in later and Dispatch will pick them up).
+    ///   * `iPhone USB`, `Bluetooth PAN`, USB-tether adapters — saved
+    ///     entries so the user *knows* Dispatch will leverage them when
+    ///     they connect their phone or pair a tether device.
+    ///   * Bluetooth PAN — surfaced even when no Bluetooth-tether device
+    ///     is currently paired, with `isCurrentlyAvailable=false`, so
+    ///     the UI can suggest pairing one.
+    ///
+    /// Each entry carries `isCurrentlyAvailable=true` iff the BSD device
+    /// is listed by `ifconfig -lu` (i.e. up + reachable). Per-service
+    /// VPN entries (PairVPN, ProtonVPN, Speedify, Arcane Dispatch
+    /// itself) are filtered out — they're virtual transports built on
+    /// top of the other links, not networks the user "connects to".
+    func listKnownServices() -> [[String: Any?]] {
+        let services = parseNetworkServices()
+        let upBSD = activeBSDInterfaces()
+        var out: [[String: Any?]] = []
+        for svc in services {
+            // Skip VPN entries — those are routing layers, not networks
+            // the user would expect to see in a network-picker.
+            if svc.isVPNLike { continue }
+            let kind = classify(port: svc.hardwarePort, bsd: svc.device)
+            let isUp = !svc.device.isEmpty && upBSD.contains(svc.device)
+            var entry: [String: Any?] = [
+                "serviceName": svc.serviceName,
+                "hardwarePort": svc.hardwarePort,
+                "bsdName": svc.device.isEmpty ? nil : svc.device,
+                "kind": kind.rawValue,
+                "isCurrentlyAvailable": isUp,
+                "disabled": svc.disabled,
+            ]
+            if kind == .wifi && isUp {
+                entry["ssid"] = currentSsid(forBsd: svc.device)
+            } else {
+                entry["ssid"] = nil
+            }
+            out.append(entry)
+        }
+        return out
     }
 
     // MARK: - Public entry points
@@ -131,6 +257,109 @@ final class NetworkNamingHandler {
     }
 
     // MARK: - Parsing
+
+    /// Parse `networksetup -listnetworkserviceorder`. Output looks like:
+    ///
+    ///     An asterisk (*) denotes that a network service is disabled.
+    ///     (1) Wi-Fi
+    ///     (Hardware Port: Wi-Fi, Device: en0)
+    ///
+    ///     (2) iPhone USB
+    ///     (Hardware Port: iPhone USB, Device: en8)
+    ///
+    ///     (3) PairVPN
+    ///     (Hardware Port: com.mobileco.PairVPN, Device: )
+    ///
+    /// We walk the lines two at a time: a numbered service header followed
+    /// by its `(Hardware Port: …, Device: …)` continuation line.
+    private func parseNetworkServices() -> [NetworkService] {
+        let raw = runShell(networksetupPath, ["-listnetworkserviceorder"])
+        let lines = raw.split(separator: "\n", omittingEmptySubsequences: false)
+        var services: [NetworkService] = []
+        var pendingName: String?
+        var pendingDisabled: Bool = false
+
+        for rawLine in lines {
+            let line = String(rawLine).trimmingCharacters(in: .whitespaces)
+            if line.isEmpty { continue }
+            // Detail rows are the form `(Hardware Port: …, Device: …)` —
+            // they wrap their whole contents in a single set of parens.
+            if line.hasPrefix("(Hardware Port:") {
+                guard let svcName = pendingName else { continue }
+                // Drop the leading `(` and trailing `)` so the field
+                // extractor doesn't need to handle them.
+                var detail = line
+                detail.removeFirst()
+                if detail.hasSuffix(")") {
+                    detail.removeLast()
+                }
+                let hp = extractField(detail, key: "Hardware Port:", terminator: ",")
+                let dev = extractEnd(detail, key: "Device:")
+                services.append(NetworkService(
+                    serviceName: svcName,
+                    hardwarePort: hp,
+                    device: dev,
+                    disabled: pendingDisabled
+                ))
+                pendingName = nil
+                pendingDisabled = false
+                continue
+            }
+            // Header rows are `(N) Service Name` or `(N)* Disabled Service`.
+            // Skip anything else (e.g. the banner about `*` semantics).
+            guard line.hasPrefix("("), let closeParen = line.firstIndex(of: ")") else {
+                continue
+            }
+            // Confirm the part between the parens is purely numeric.
+            let between = line[line.index(after: line.startIndex)..<closeParen]
+            let digitsOnly = between.allSatisfy { $0.isNumber }
+            if !digitsOnly { continue }
+            let afterParen = line.index(after: closeParen)
+            var rest = String(line[afterParen...])
+                .trimmingCharacters(in: .whitespaces)
+            var disabled = false
+            if rest.hasPrefix("*") {
+                disabled = true
+                rest = String(rest.dropFirst())
+                    .trimmingCharacters(in: .whitespaces)
+            }
+            pendingName = rest
+            pendingDisabled = disabled
+        }
+        return services
+    }
+
+    /// Pulls `value` out of a string like
+    /// `Hardware Port: Wi-Fi, Device: en0`. Returns "" when the field is
+    /// missing.
+    private func extractField(_ s: String, key: String, terminator: Character) -> String {
+        guard let keyRange = s.range(of: key) else { return "" }
+        let after = s[keyRange.upperBound...]
+        guard let term = after.firstIndex(of: terminator) else {
+            return after.trimmingCharacters(in: .whitespaces)
+        }
+        return after[..<term].trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Same as [extractField] but returns everything from `key` to the
+    /// end of the string. Used for the last field on a row (`Device: enX`
+    /// where the closing paren has already been trimmed).
+    private func extractEnd(_ s: String, key: String) -> String {
+        guard let keyRange = s.range(of: key) else { return "" }
+        return s[keyRange.upperBound...]
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Set of BSD interface names that are currently UP (i.e. listed by
+    /// `ifconfig -lu`). Used to decide whether a saved network service
+    /// is "Connected" or "Disconnected" without having to enumerate
+    /// addresses on each interface.
+    private func activeBSDInterfaces() -> Set<String> {
+        let raw = runShell("/sbin/ifconfig", ["-lu"])
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return [] }
+        return Set(trimmed.split(separator: " ").map { String($0) })
+    }
 
     private func parseHardwarePorts() -> [HardwarePort] {
         let raw = runShell(networksetupPath, ["-listallhardwareports"])

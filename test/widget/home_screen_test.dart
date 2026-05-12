@@ -1,8 +1,10 @@
 import 'dart:io';
 
+import 'package:arcane_dispatch/core/bonding_mode.dart';
 import 'package:arcane_dispatch/core/dispatch_settings.dart';
 import 'package:arcane_dispatch/core/link.dart';
 import 'package:arcane_dispatch/core/network_interface_repository.dart';
+import 'package:arcane_dispatch/core/policy.dart';
 import 'package:arcane_dispatch/core/socks_proxy_server.dart';
 import 'package:arcane_dispatch/core/weighted_address.dart';
 import 'package:arcane_dispatch/platform/network_naming_service.dart';
@@ -41,6 +43,23 @@ void main() {
   ) async {
     await tester.runAsync(() async {
       await settingsBox.put('selected_targets', <String>['en0']);
+      // Pin transport_kind to socks so the controller renders the SOCKS
+      // path. Production now defaults to the system-wide tunnel; this
+      // widget test exercises the legacy proxy start path so the fake
+      // transport's `Server` start is observable.
+      await settingsBox.put('transport_kind', 'socks');
+      // Disable captive-portal assist for this test. Production now
+      // defaults it ON (so Wi-Fi networks stuck behind sign-in pages
+      // automatically demote and the bond keeps moving), but the
+      // detector spins up periodic timers that would trip the Flutter
+      // widget-test "pending timers" guard. This test only exercises
+      // the proxy-start path; the captive assist subsystem has its
+      // own focused tests.
+      Policy noCaptive = const Policy(
+        mode: BondingMode.speed,
+        captivePortalAssist: false,
+      );
+      await settingsBox.put('policy_v1', noCaptive.encode());
     });
     _FakeRepository repository = _FakeRepository();
     late _FakeServer server;
@@ -69,6 +88,18 @@ void main() {
           ),
         );
       },
+      // Disable Pair & Share for this widget test. Production wires a
+      // real PairCoordinator via the default factory, which opens an
+      // EventChannel subscription on `dispatch_pair/events` and spins
+      // a Future<NoiseKeypair> in the background. Neither has a host
+      // handler in the test harness, and the trailing event-channel
+      // subscription is enough to wedge `tester.pump()` indefinitely
+      // (no timers ever advance to a "settled" state). The Pair tab
+      // gracefully renders a "Pairing is disabled" notice when the
+      // coordinator is null, which is what we want here. The pair
+      // path itself is exercised by dedicated tests under
+      // `test/paired/*`.
+      pairCoordinatorFactory: () => null,
     );
     await controller!.initialize();
 
@@ -89,6 +120,14 @@ void main() {
     expect(server.started, isTrue);
     expect(server.addresses.single.ipv4!.address, '10.0.0.4');
     expect(find.text('Running'), findsOneWidget);
+
+    // Stop the proxy before the test exits. The SOCKS transport now
+    // runs a 1 Hz throughput emitter while running, and the Flutter
+    // widget-test "pending timers" guard runs *before* tearDown gets a
+    // chance to dispose the controller. Stopping here keeps the test
+    // self-contained.
+    await controller!.stopProxy();
+    await tester.pump();
   });
 }
 

@@ -48,7 +48,13 @@ class DispatchSettings {
     this.launchAtStartup = false,
     this.startProxyOnLaunch = false,
     this.hideOnBlur = true,
-    this.transportKind = TransportKind.socks,
+    // Tunnel mode (system-wide Network Extension) is the default because
+    // that's the experience the product is meant to replace — Speedify
+    // covers every app on the machine without per-app configuration.
+    // SOCKS is still available from the gear-icon settings for power
+    // users who want a per-app proxy or who don't have the Network
+    // Extension entitlement signed in to their build.
+    this.transportKind = TransportKind.tunnel,
     this.links = const <Link>[],
     this.policy = const Policy(),
   });
@@ -164,7 +170,13 @@ class DispatchSettings {
         // Fall through to default policy below.
       }
     }
-    return Policy(mode: BondingMode.speed, links: links);
+    // Default bonding mode is [BondingMode.streaming] (not `speed`) so
+    // realtime traffic — video calls, screen shares, voice — gets sent
+    // down the lowest-latency link automatically while bulk transfers
+    // still bond across every interface. That matches the user-facing
+    // promise of "always prioritize internet connection and latency,
+    // combine the rest for download speed".
+    return Policy(mode: BondingMode.streaming, links: links);
   }
 
   static List<String> _readLegacyTargets(Box box) {

@@ -318,6 +318,13 @@ class _FakeTunnelChannel implements TunnelChannel {
     return null;
   }
 
+  @override
+  Future<List<TunnelThroughputSample>> getThroughput() async {
+    // No bonded forwarder running in tests — return an empty list so
+    // TunnelTransport's polling loop is a no-op.
+    return const <TunnelThroughputSample>[];
+  }
+
   // The Speed Server config methods aren't exercised by the tunnel
   // transport itself yet (they're driven directly from the controller in
   // Phase 8.12), but the fake has to implement the interface or the
