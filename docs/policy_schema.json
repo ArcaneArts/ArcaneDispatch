@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://arcane.art/dispatch/schemas/policy-v1.json",
+  "title": "ArcaneDispatch Policy",
+  "description": "Shared schema for the policy.json the Dart container app writes to the App Group container and the macOS Network Extension reads on startTunnel / reloadPolicy. Authoritative source — both lib/core/policy.dart and macos/ArcaneDispatchTunnel/Engine/PolicyStore.swift MUST stay aligned with this document. Bump `version` and the schemaVersion constants in lockstep when fields are added or removed in a breaking way.",
+  "type": "object",
+  "required": ["version", "mode", "killSwitch", "links"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 1,
+      "description": "Wire-schema version. Mirrors Policy.schemaVersion in Dart and the matching constant in Swift. Extensions that see a higher version than they understand MUST refuse to start and surface a `failed` status."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["speed", "redundant", "streaming", "local"],
+      "description": "Active bonding mode. Maps to BondingMode in Dart and the scheduler choice in the extension. `local` keeps traffic inside the device (no Speed Server)."
+    },
+    "killSwitch": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, the transport blocks egress whenever the supervisor reports no healthy link. The extension MUST drop packets rather than fall through to the kernel's default route."
+    },
+    "streamingDetection": {
+      "type": "boolean",
+      "default": true,
+      "description": "When true, the streaming detector tags real-time flows (Zoom/WebRTC/SNI allow-list) and the scheduler upgrades them to the RT queue."
+    },
+    "dnsServers": {
+      "type": "array",
+      "items": {"type": "string"},
+      "default": [],
+      "description": "DNS servers the tunnel announces via NEPacketTunnelNetworkSettings.dnsSettings. Empty falls back to system defaults."
+    },
+    "splitTunnelAllowList": {
+      "type": "array",
+      "items": {"type": "string"},
+      "default": [],
+      "description": "Hostnames / suffixes that bypass the tunnel. Implemented as suffix match in the extension. Empty means everything goes through the tunnel."
+    },
+    "serverUrl": {
+      "type": ["string", "null"],
+      "format": "uri",
+      "description": "Speed Server URL (e.g. udp://relay.example.com:443). Null puts the transport in local-only mode."
+    },
+    "serverToken": {
+      "type": ["string", "null"],
+      "description": "Opaque per-client auth token issued by the server's genkey/adduser commands. Stored in the App Group for the extension to read."
+    },
+    "bondedTransport": {
+      "type": "boolean",
+      "default": false,
+      "description": "Debug flag (Phase 7). When true the macOS Network Extension also drives the BondedClient encoder for every outbound packet so we can log-inspect bonded frames before the Speed Server (Phase 8) is reachable. Defaults to false; production builds keep it off."
+    },
+    "captivePortalAssist": {
+      "type": "boolean",
+      "default": false,
+      "description": "Phase 14. When true, the container app's CaptivePortalDetector runs per-link probes against http://captive.apple.com/ and demotes captive links to Backup until they pass. The extension itself doesn't probe — it only reacts to the priorities Dart pushes into policy.json. Defaults to false."
+    },
+    "links": {
+      "type": "array",
+      "description": "All configured uplinks in user-defined order. UI ordering and dispatcher ordering both consume this list as-is.",
+      "items": {"$ref": "#/$defs/Link"}
+    }
+  },
+  "$defs": {
+    "Link": {
+      "type": "object",
+      "required": ["id", "label", "priority", "weight"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier (typically `legacy:<token>` or a generated UUID). Used as the join key for metrics, flows, and the App Group shared state. MUST be unique across links."
+        },
+        "label": {
+          "type": "string",
+          "description": "Human display name. Defaults to the interface name in Dart."
+        },
+        "interfaceName": {
+          "type": ["string", "null"],
+          "description": "Optional system interface name (e.g. en0). When null, sourceAddress alone is used; at least one of these must resolve to a usable source IP."
+        },
+        "sourceAddress": {
+          "type": ["string", "null"],
+          "description": "Literal source IP or CIDR override. Free-form because we need both v4 and v6, plus eventual virtual links (Pair & Share)."
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["primary", "secondary", "backup", "never"],
+          "description": "Routing bucket. Engine tries primary first while any primary is healthy, then secondary, then backup. `never` is excluded entirely."
+        },
+        "weight": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 1,
+          "description": "Integer weight inside the priority bucket. Maps onto the legacy `<target>/<weight>` syntax. Used by the weighted round-robin dispatcher."
+        },
+        "speedCapBps": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Per-link throughput cap in bytes/second. Null = no cap. Enforced by the token-bucket limiter on each engine instance."
+        },
+        "dataCapBytes": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Per-billing-cycle data allowance in bytes. Null = no cap. When dataUsedBytes >= dataCapBytes the supervisor marks the link as disabled."
+        },
+        "dataUsedBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Running counter incremented by the data meter. Resets on billingCycleAnchor rollover."
+        },
+        "billingCycleAnchor": {
+          "type": ["string", "null"],
+          "description": "ISO-8601 date string used as the monthly rollover anchor for dataUsedBytes."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["unknown", "healthy", "degraded", "unhealthy", "disabled"],
+          "default": "unknown",
+          "description": "Last-known health state, written by the supervisor. Persisted so the UI can show a meaningful state on cold boot. The extension MUST ignore this field — the running supervisor is the only writer."
+        }
+      }
+    }
+  }
+}

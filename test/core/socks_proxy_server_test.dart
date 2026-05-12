@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:arcane_dispatch/core/proxy_event.dart';
 import 'package:arcane_dispatch/core/socks_proxy_server.dart';
 import 'package:arcane_dispatch/core/weighted_address.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -105,6 +106,80 @@ void main() {
     await proxy.stop();
     await echo.stop();
   });
+
+  test(
+    'stall watchdog tears down connection when both directions go silent',
+    () async {
+      _EchoServer echo = await _EchoServer.start();
+      List<ProxyEvent> events = <ProxyEvent>[];
+      SocksProxyServer proxy = SocksProxyServer(
+        onEvent: events.add,
+        stallTimeout: const Duration(milliseconds: 250),
+      );
+      await proxy.start(
+        listenAddress: InternetAddress.loopbackIPv4,
+        port: 0,
+        addresses: <ResolvedWeightedAddress>[
+          ResolvedWeightedAddress(
+            label: 'loopback',
+            weight: 1,
+            ipv4: InternetAddress.loopbackIPv4,
+          ),
+        ],
+      );
+
+      Socket client = await Socket.connect(
+        InternetAddress.loopbackIPv4,
+        proxy.boundPort!,
+      );
+      _SocketReader reader = _SocketReader(client);
+
+      // SOCKS5 handshake + CONNECT to echo, but never send any payload so the
+      // pipe sees no traffic in either direction.
+      client.add(<int>[0x05, 0x01, 0x00]);
+      await client.flush();
+      expect(await reader.readExact(2), <int>[0x05, 0x00]);
+      client.add(<int>[
+        0x05,
+        0x01,
+        0x00,
+        0x01,
+        127,
+        0,
+        0,
+        1,
+        echo.port >> 8,
+        echo.port & 0xff,
+      ]);
+      await client.flush();
+      List<int> status = await reader.readExact(10);
+      expect(status[1], 0x00);
+
+      // Wait until the proxy emits the closure event for our connection.
+      // The watchdog fires every stallTimeout/2 = 125ms; allow ~1s for the
+      // teardown round-trip on slow CI.
+      DateTime deadline =
+          DateTime.now().add(const Duration(seconds: 2));
+      while (DateTime.now().isBefore(deadline) &&
+          !events.any((ProxyEvent e) =>
+              e.type == ProxyEventType.warning &&
+              e.message.contains('stalled'))) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+
+      expect(
+        events.any((ProxyEvent e) =>
+            e.type == ProxyEventType.warning &&
+            e.message.contains('stalled')),
+        isTrue,
+        reason: 'expected stall watchdog to emit a warning event',
+      );
+
+      client.destroy();
+      await proxy.stop();
+      await echo.stop();
+    },
+  );
 }
 
 class _EchoServer {

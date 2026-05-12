@@ -1,12 +1,46 @@
 import 'package:hive/hive.dart';
 
+import 'bonding_mode.dart';
+import 'link.dart';
+import 'policy.dart';
+import '../transport/transport.dart';
+
+/// Persisted user settings.
+///
+/// Phase 1 schema (`links_v1`):
+///
+/// * `listen_host` / `listen_port` — legacy SOCKS endpoint config.
+/// * `launch_at_startup` / `start_on_launch` / `hide_on_blur` — UX flags.
+/// * `selected_targets` — legacy `<target>[/weight]` list. Kept readable for
+///   one release window so a user can roll back to a pre-`links_v1` build
+///   without losing their interface picks.
+/// * `links_v1` — JSON-encoded list of [Link]s. New schema. Source of truth.
+/// * `policy_v1` — JSON-encoded [Policy] (mode, killSwitch, dns, etc.).
+/// * `transport_kind` — `socks` (default) or `tunnel`.
+///
+/// Migration runs in [load]: when `links_v1` is missing but `selected_targets`
+/// exists, we synthesize a [Link] per legacy token (`Link.fromLegacyTarget`)
+/// and write it back under `links_v1`. The legacy key stays in place so a
+/// downgrade still works.
 class DispatchSettings {
+  /// Current persistent schema version. Bumped if [load] needs to do anything
+  /// destructive in the future (Phase 1 stays at 1).
+  static const int schemaVersion = 1;
+
+  static const String _legacyTargetsKey = 'selected_targets';
+  static const String _linksKey = 'links_v1';
+  static const String _policyKey = 'policy_v1';
+  static const String _transportKindKey = 'transport_kind';
+  static const String _schemaVersionKey = 'schema_version';
+
   final String listenHost;
   final int listenPort;
   final bool launchAtStartup;
   final bool startProxyOnLaunch;
   final bool hideOnBlur;
-  final List<String> selectedTargets;
+  final TransportKind transportKind;
+  final List<Link> links;
+  final Policy policy;
 
   const DispatchSettings({
     this.listenHost = '127.0.0.1',
@@ -14,8 +48,20 @@ class DispatchSettings {
     this.launchAtStartup = false,
     this.startProxyOnLaunch = false,
     this.hideOnBlur = true,
-    this.selectedTargets = const <String>[],
+    this.transportKind = TransportKind.socks,
+    this.links = const <Link>[],
+    this.policy = const Policy(),
   });
+
+  /// Legacy view of the selected targets, kept so existing UI code that still
+  /// renders `<target>[/weight]` chips keeps working until Phase 15 replaces
+  /// it. Derived from [links] on the fly so it never goes stale.
+  List<String> get selectedTargets {
+    return links
+        .where((Link link) => link.priority != LinkPriority.never)
+        .map((Link link) => link.toLegacyTarget())
+        .toList();
+  }
 
   DispatchSettings copyWith({
     String? listenHost,
@@ -23,7 +69,9 @@ class DispatchSettings {
     bool? launchAtStartup,
     bool? startProxyOnLaunch,
     bool? hideOnBlur,
-    List<String>? selectedTargets,
+    TransportKind? transportKind,
+    List<Link>? links,
+    Policy? policy,
   }) {
     return DispatchSettings(
       listenHost: listenHost ?? this.listenHost,
@@ -31,16 +79,22 @@ class DispatchSettings {
       launchAtStartup: launchAtStartup ?? this.launchAtStartup,
       startProxyOnLaunch: startProxyOnLaunch ?? this.startProxyOnLaunch,
       hideOnBlur: hideOnBlur ?? this.hideOnBlur,
-      selectedTargets: selectedTargets ?? this.selectedTargets,
+      transportKind: transportKind ?? this.transportKind,
+      links: links ?? this.links,
+      policy: policy ?? this.policy,
     );
   }
 
+  /// Convenience overload: replace the legacy target list, regenerating the
+  /// underlying [links]. Used by the existing checkbox UI in [home_screen].
+  DispatchSettings copyWithSelectedTargets(List<String> targets) {
+    List<Link> next = _buildLinksFromTargets(targets, existing: links);
+    return copyWith(links: next, policy: policy.copyWith(links: next));
+  }
+
   static DispatchSettings load(Box box) {
-    List<String> targets = <String>[];
-    Object? rawTargets = box.get('selected_targets');
-    if (rawTargets is List) {
-      targets = rawTargets.map((Object? value) => value.toString()).toList();
-    }
+    List<Link> links = _readLinks(box);
+    Policy policy = _readPolicy(box, links);
 
     return DispatchSettings(
       listenHost: box.get('listen_host', defaultValue: '127.0.0.1').toString(),
@@ -50,7 +104,9 @@ class DispatchSettings {
       startProxyOnLaunch:
           box.get('start_proxy_on_launch', defaultValue: false) == true,
       hideOnBlur: box.get('hide_on_blur', defaultValue: true) == true,
-      selectedTargets: targets,
+      transportKind: TransportKindCodec.parse(box.get(_transportKindKey)),
+      links: links,
+      policy: policy,
     );
   }
 
@@ -60,7 +116,88 @@ class DispatchSettings {
     await box.put('launch_at_startup', launchAtStartup);
     await box.put('start_proxy_on_launch', startProxyOnLaunch);
     await box.put('hide_on_blur', hideOnBlur);
-    await box.put('selected_targets', selectedTargets);
+    await box.put(_transportKindKey, transportKind.wireName);
+    await box.put(
+      _linksKey,
+      links.map((Link link) => link.encode()).toList(),
+    );
+    await box.put(_policyKey, policy.encode());
+    // Mirror to the legacy key so a downgrade keeps the user's picks.
+    await box.put(_legacyTargetsKey, selectedTargets);
+    await box.put(_schemaVersionKey, schemaVersion);
+  }
+
+  static List<Link> _readLinks(Box box) {
+    Object? raw = box.get(_linksKey);
+    if (raw is List) {
+      List<Link> result = <Link>[];
+      for (Object? entry in raw) {
+        try {
+          if (entry is String) {
+            result.add(Link.decode(entry));
+          } else if (entry is Map) {
+            result.add(Link.fromJson(entry.cast<String, Object?>()));
+          }
+        } catch (_) {
+          // Skip malformed entries — they will be regenerated from the legacy
+          // list below if present.
+        }
+      }
+      if (result.isNotEmpty) {
+        return result;
+      }
+    }
+
+    // Migration path: synthesize Link objects from the legacy target list.
+    List<String> legacy = _readLegacyTargets(box);
+    return _buildLinksFromTargets(legacy);
+  }
+
+  static Policy _readPolicy(Box box, List<Link> links) {
+    Object? raw = box.get(_policyKey);
+    if (raw is String && raw.isNotEmpty) {
+      try {
+        Policy stored = Policy.decode(raw);
+        // Re-sync links with the freshly-read list so the two never disagree.
+        return stored.copyWith(links: links);
+      } catch (_) {
+        // Fall through to default policy below.
+      }
+    }
+    return Policy(mode: BondingMode.speed, links: links);
+  }
+
+  static List<String> _readLegacyTargets(Box box) {
+    Object? raw = box.get(_legacyTargetsKey);
+    if (raw is List) {
+      return raw.map((Object? value) => value.toString()).toList();
+    }
+    return const <String>[];
+  }
+
+  static List<Link> _buildLinksFromTargets(
+    List<String> targets, {
+    List<Link> existing = const <Link>[],
+  }) {
+    Map<String, Link> existingById = <String, Link>{
+      for (Link link in existing) link.toLegacyTarget(): link,
+    };
+    List<Link> result = <Link>[];
+    Set<String> seen = <String>{};
+    for (String token in targets) {
+      String trimmed = token.trim();
+      if (trimmed.isEmpty || seen.contains(trimmed)) {
+        continue;
+      }
+      seen.add(trimmed);
+      Link? carry = existingById[trimmed];
+      if (carry != null) {
+        result.add(carry);
+        continue;
+      }
+      result.add(Link.fromLegacyTarget(trimmed));
+    }
+    return result;
   }
 
   static int _coercePort(Object? value, {required int fallback}) {

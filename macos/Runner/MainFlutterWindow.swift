@@ -49,6 +49,24 @@ class MainFlutterWindow: NSWindow {
       }
     }
 
+    // Phase 5: Network Extension bridge. Owns install/start/stop/policy push.
+    // Channel name: `dispatch_tunnel` (mirror in lib/bridge/tunnel_channel.dart).
+    TunnelManager.shared.register(with: flutterViewController)
+
+    // Phase 13: Pair & Share discovery bridge. Wires the Bonjour-based
+    // `PairedNetworkService` to the Dart `PairedMethodChannelDiscovery`.
+    // Channel name: `dispatch_pair` (mirror in lib/paired/paired_channel.dart).
+    if #available(macOS 10.15, *) {
+      PairChannelHandler.shared.register(with: flutterViewController)
+    }
+
+    // UI: friendly SSID / hardware-port names. Resolves raw BSD interface
+    // names (`en0`, `en7`) into "Home Wi-Fi", "USB 10/100/1000 LAN",
+    // "iPhone USB", etc. so the network list reads like English.
+    // Channel name: `art.arcane.dispatch/naming` (mirror in
+    // `lib/platform/network_naming_service.dart`).
+    NetworkNamingHandler.shared.register(with: flutterViewController)
+
     RegisterGeneratedPlugins(registry: flutterViewController)
     super.awakeFromNib()
     self.orderOut(nil)

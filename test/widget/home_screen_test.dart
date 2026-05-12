@@ -1,10 +1,18 @@
 import 'dart:io';
 
+import 'package:arcane_dispatch/core/dispatch_settings.dart';
+import 'package:arcane_dispatch/core/link.dart';
 import 'package:arcane_dispatch/core/network_interface_repository.dart';
 import 'package:arcane_dispatch/core/socks_proxy_server.dart';
 import 'package:arcane_dispatch/core/weighted_address.dart';
+import 'package:arcane_dispatch/platform/network_naming_service.dart';
+import 'package:arcane_dispatch/policy/byte_accountant.dart';
+import 'package:arcane_dispatch/probes/link_metric_store.dart';
+import 'package:arcane_dispatch/probes/link_probe_service.dart';
 import 'package:arcane_dispatch/screen/dispatch_controller.dart';
 import 'package:arcane_dispatch/screen/home_screen.dart';
+import 'package:arcane_dispatch/transport/socks_transport.dart';
+import 'package:arcane_dispatch/transport/transport.dart';
 import 'package:arcane_dispatch/ui/dispatch_ui.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -34,11 +42,33 @@ void main() {
     await tester.runAsync(() async {
       await settingsBox.put('selected_targets', <String>['en0']);
     });
-    _FakeServer server = _FakeServer();
+    _FakeRepository repository = _FakeRepository();
+    late _FakeServer server;
     controller = DispatchController(
-      repository: _FakeRepository(),
+      repository: repository,
       settingsBox: settingsBox,
-      server: server,
+      probeService: _NoopProbeService(),
+      metricStore: LinkMetricStore(),
+      // Inert naming service so the widget test doesn't trip the
+      // pending-timer guard. Production wires the real macOS resolver
+      // from `MainFlutterWindow.swift` -> `NetworkNamingHandler`.
+      namingService: NetworkNamingService(
+        fetcher: () async => const <NamedInterface>[],
+        autoStart: false,
+      ),
+      transportFactory: (TransportKind kind, DispatchSettings settings) {
+        return SocksTransport(
+          repository: repository,
+          serverFactory: (ProxyEventSink onEvent, ByteAccountant _) {
+            server = _FakeServer(onEvent: onEvent);
+            return server;
+          },
+          config: SocksTransportConfig(
+            listenHost: settings.listenHost,
+            listenPort: settings.listenPort,
+          ),
+        );
+      },
     );
     await controller!.initialize();
 
@@ -63,6 +93,8 @@ void main() {
 }
 
 class _FakeRepository extends NetworkInterfaceRepository {
+  const _FakeRepository();
+
   @override
   Future<List<NetworkInterfaceSnapshot>> listUsableInterfaces() async {
     return <NetworkInterfaceSnapshot>[
@@ -75,9 +107,29 @@ class _FakeRepository extends NetworkInterfaceRepository {
   }
 }
 
+/// Probe service that does nothing — keeps the widget test free of pending
+/// timers. The real service is exercised in `test/probes/*`.
+class _NoopProbeService extends LinkProbeService {
+  _NoopProbeService() : super();
+
+  @override
+  void updateLinks(List<Link> links) {}
+
+  @override
+  void updateInterfaces(List<NetworkInterfaceSnapshot> interfaces) {}
+
+  @override
+  void cancelTimers() {}
+
+  @override
+  Future<void> stop() async {}
+}
+
 class _FakeServer extends SocksProxyServer {
   bool started = false;
   List<ResolvedWeightedAddress> addresses = <ResolvedWeightedAddress>[];
+
+  _FakeServer({super.onEvent});
 
   @override
   bool get isRunning {

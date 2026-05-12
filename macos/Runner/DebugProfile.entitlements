@@ -1,5 +1,21 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Debug-profile entitlements.
+
+  The Network Extension + App Group + system-extension entitlements live in
+  Release.entitlements only. Those three keys are *restricted entitlements*
+  that require an Apple Developer Team provisioning profile to be present at
+  launch — with Flutter's default ad-hoc debug signing, AMFI SIGKILLs the
+  process before main() runs.
+
+  To exercise the Phase 5+ tunnel locally you must:
+    1. Enable the NetworkExtension + App Group capabilities for your team in
+       https://developer.apple.com/account.
+    2. Generate a Developer ID provisioning profile that includes them.
+    3. Set CODE_SIGN_IDENTITY + DEVELOPMENT_TEAM in Runner.xcodeproj and
+       copy Release.entitlements into this file (or build with --release).
+-->
 <plist version="1.0">
 <dict>
 	<key>com.apple.security.app-sandbox</key>

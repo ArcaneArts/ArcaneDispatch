@@ -44,3 +44,21 @@ For a command-line smoke test after selecting an active interface and starting t
 ```bash
 curl --socks5-hostname 127.0.0.1:1080 https://example.com
 ```
+
+## Release Builds
+
+`tools/release.sh` automates the full release pipeline: Flutter build + codesign
++ notarize for the `.app`, plus Go cross-compile for the speed-server (darwin /
+linux × arm64 / amd64).
+
+```bash
+cp tools/release.env.example tools/release.env   # fill in once
+./tools/release.sh                               # build everything
+./tools/release.sh --only-server                 # just the Go binaries
+./tools/release.sh --skip-notary                 # local dev (sign only)
+```
+
+Artifacts (and a `SHA256SUMS-<ver>.txt` manifest) land in `dist/`. See
+[`speed-server/README.md`](speed-server/README.md) for the relay server's
+deploy instructions.
+

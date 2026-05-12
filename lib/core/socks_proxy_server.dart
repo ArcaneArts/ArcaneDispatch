@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import '../policy/byte_accountant.dart';
 import 'proxy_event.dart';
 import 'weighted_address.dart';
 
@@ -10,7 +11,25 @@ typedef ProxyEventSink = void Function(ProxyEvent event);
 
 class SocksProxyServer {
   final ProxyEventSink? onEvent;
+
+  /// Optional per-chunk callback invoked before each chunk is written through
+  /// the proxy in either direction. Lets the [Transport] layer apply per-link
+  /// token-bucket throttling and data-meter accounting without modifying the
+  /// SOCKS handshake / dispatch logic.
+  final ByteAccountant? accountant;
+
   final Duration connectTimeout;
+
+  /// Bidirectional idle timeout for a proxied connection.
+  ///
+  /// When BOTH directions of a piped connection go silent for longer than
+  /// this duration, the watchdog destroys both sockets and emits a
+  /// `connectionStalled` warning event. Set to [Duration.zero] to disable
+  /// stall detection (default is 90s, which is short enough to recover from
+  /// half-open NAT entries and long enough to tolerate normal idle keep-
+  /// alives like long-polling).
+  final Duration stallTimeout;
+
   final InternetAddress Function(String address) addressParser;
 
   ServerSocket? _server;
@@ -20,7 +39,9 @@ class SocksProxyServer {
 
   SocksProxyServer({
     this.onEvent,
+    this.accountant,
     this.connectTimeout = const Duration(seconds: 30),
+    this.stallTimeout = const Duration(seconds: 90),
     this.addressParser = InternetAddress.new,
   });
 
@@ -109,7 +130,7 @@ class SocksProxyServer {
           remotePort: remotePort,
         ),
       );
-      await _pipeMultiple(client, remote, cursor);
+      await _pipeMultiple(client, remote, cursor, localAddress);
       _emit(
         ProxyEvent(
           type: ProxyEventType.connectionClosed,
@@ -348,21 +369,112 @@ class SocksProxyServer {
     Socket client,
     Socket remote,
     _SocketCursor clientCursor,
+    InternetAddress localAddress,
   ) async {
-    Future<void> clientToRemote = clientCursor.pipeTo(remote);
-    Future<void> remoteToClient = _pipeSocket(remote, client);
+    // Shared activity tracker used by both pipe directions. The watchdog
+    // below only kills the pair when BOTH directions stop touching this for
+    // longer than [stallTimeout] — one-way idle (e.g. an SSH session waiting
+    // on a key press) is fine.
+    _ActivityTracker activity = _ActivityTracker();
 
-    await Future.any(<Future<void>>[clientToRemote, remoteToClient]);
-    client.destroy();
-    remote.destroy();
-    await Future.wait<void>(<Future<void>>[
-      clientToRemote.catchError((Object _) {}),
-      remoteToClient.catchError((Object _) {}),
-    ]);
+    // Wrap the per-chunk accountant once per direction. Even when there's no
+    // accountant we still install a closure so the activity tracker keeps
+    // working; the closure is `null`-cheap (one function call per chunk).
+    ByteAccountant? acc = accountant;
+    Future<void> Function(int bytes) upstream;
+    Future<void> Function(int bytes) downstream;
+    if (acc != null) {
+      upstream = (int bytes) async {
+        activity.touch();
+        await acc(
+          localAddress: localAddress,
+          bytes: bytes,
+          direction: ByteDirection.upstream,
+        );
+      };
+      downstream = (int bytes) async {
+        activity.touch();
+        await acc(
+          localAddress: localAddress,
+          bytes: bytes,
+          direction: ByteDirection.downstream,
+        );
+      };
+    } else {
+      upstream = (int _) async {
+        activity.touch();
+      };
+      downstream = (int _) async {
+        activity.touch();
+      };
+    }
+
+    // Watchdog timer: ticks at half the stall window so the worst-case
+    // latency between idle-onset and teardown is ~1.5× stallTimeout. Set
+    // [stallTimeout] to zero to disable.
+    Timer? watchdog;
+    bool stalled = false;
+    if (stallTimeout > Duration.zero) {
+      Duration tick = Duration(
+        milliseconds: (stallTimeout.inMilliseconds ~/ 2).clamp(1, 1 << 30),
+      );
+      watchdog = Timer.periodic(tick, (Timer _) {
+        if (activity.idleFor() >= stallTimeout) {
+          stalled = true;
+          _emit(
+            ProxyEvent(
+              type: ProxyEventType.warning,
+              message:
+                  'Connection stalled (no traffic for ${stallTimeout.inSeconds}s) via ${localAddress.address}',
+              localAddress: localAddress,
+            ),
+          );
+          // Tearing down the sockets lets both pipe futures complete and
+          // the outer `_serveClient` finalizer runs as usual.
+          client.destroy();
+          remote.destroy();
+        }
+      });
+    }
+
+    try {
+      Future<void> clientToRemote = clientCursor.pipeTo(
+        remote,
+        beforeFlush: upstream,
+      );
+      Future<void> remoteToClient = _pipeSocket(
+        remote,
+        client,
+        beforeFlush: downstream,
+      );
+
+      await Future.any(<Future<void>>[clientToRemote, remoteToClient]);
+      client.destroy();
+      remote.destroy();
+      await Future.wait<void>(<Future<void>>[
+        clientToRemote.catchError((Object _) {}),
+        remoteToClient.catchError((Object _) {}),
+      ]);
+    } finally {
+      watchdog?.cancel();
+    }
+
+    if (stalled) {
+      throw const SocksProtocolException(
+        'Connection terminated by stall watchdog.',
+      );
+    }
   }
 
-  Future<void> _pipeSocket(Socket source, Socket destination) async {
+  Future<void> _pipeSocket(
+    Socket source,
+    Socket destination, {
+    Future<void> Function(int bytes)? beforeFlush,
+  }) async {
     await for (Uint8List chunk in source) {
+      if (chunk.isNotEmpty && beforeFlush != null) {
+        await beforeFlush(chunk.length);
+      }
       destination.add(chunk);
       await destination.flush();
     }
@@ -403,6 +515,23 @@ class _RemoteEndpoint {
   final int port;
 
   const _RemoteEndpoint({required this.address, required this.port});
+}
+
+/// Tracks "time since last touch" for the stall watchdog.
+///
+/// Uses a single [Stopwatch] reset on every chunk in either pipe direction.
+/// `reset()` zeroes the elapsed time without stopping the clock, so the
+/// hot path is just one virtual call per chunk.
+class _ActivityTracker {
+  final Stopwatch _sw = Stopwatch()..start();
+
+  void touch() {
+    _sw.reset();
+  }
+
+  Duration idleFor() {
+    return _sw.elapsed;
+  }
 }
 
 class _SocketCursor {
@@ -458,14 +587,24 @@ class _SocketCursor {
     return result;
   }
 
-  Future<void> pipeTo(Socket destination) async {
+  Future<void> pipeTo(
+    Socket destination, {
+    Future<void> Function(int bytes)? beforeFlush,
+  }) async {
     Uint8List? buffered = takeBufferedBytes();
     if (buffered != null && buffered.isNotEmpty) {
+      if (beforeFlush != null) {
+        await beforeFlush(buffered.length);
+      }
       destination.add(buffered);
       await destination.flush();
     }
     while (await _iterator.moveNext()) {
-      destination.add(_iterator.current);
+      Uint8List chunk = _iterator.current;
+      if (chunk.isNotEmpty && beforeFlush != null) {
+        await beforeFlush(chunk.length);
+      }
+      destination.add(chunk);
       await destination.flush();
     }
   }

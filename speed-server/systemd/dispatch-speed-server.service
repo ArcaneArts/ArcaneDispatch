@@ -1,0 +1,67 @@
+# systemd unit for running dispatch-speed-server bare-metal (no Docker).
+#
+# Install:
+#   sudo install -m 0755 dispatch-speed-server /usr/local/bin/
+#   sudo useradd --system --home /var/lib/dispatch --shell /usr/sbin/nologin dispatch
+#   sudo install -d -o dispatch -g dispatch -m 0700 /var/lib/dispatch
+#   sudo -u dispatch /usr/local/bin/dispatch-speed-server genkey -out /var/lib/dispatch/server.key
+#   sudo -u dispatch /usr/local/bin/dispatch-speed-server adduser -auth /var/lib/dispatch/auth.json -user yourname
+#   sudo install -m 0644 systemd/dispatch-speed-server.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now dispatch-speed-server
+#
+# Logs:
+#   journalctl -u dispatch-speed-server -f
+
+[Unit]
+Description=ArcaneDispatch Bonded Speed Server
+Documentation=https://github.com/arcanearts/dispatch
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dispatch
+Group=dispatch
+WorkingDirectory=/var/lib/dispatch
+ExecStart=/usr/local/bin/dispatch-speed-server serve \
+    -udp :4430 \
+    -tcp :4430 \
+    -stats 127.0.0.1:9090 \
+    -auth /var/lib/dispatch/auth.json \
+    -key  /var/lib/dispatch/server.key
+
+# Network capabilities required for the Phase 11 NAT44 egress. Granted
+# pre-emptively so the unit doesn't need a redeploy when egress lands.
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+
+# Hardening — locked down to the absolute minimum the server needs.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/dispatch
+
+# Restart on crash, but back off so a crash loop doesn't burn the box.
+Restart=on-failure
+RestartSec=5s
+StartLimitInterval=60s
+StartLimitBurst=5
+
+# Resource caps. Tune for your VPS — these defaults fit a 1 GB box.
+LimitNOFILE=65536
+TasksMax=4096
+
+[Install]
+WantedBy=multi-user.target

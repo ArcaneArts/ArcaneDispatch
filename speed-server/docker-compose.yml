@@ -1,0 +1,46 @@
+# Reference deployment for the ArcaneDispatch speed server.
+#
+# Usage:
+#   1. Drop your `server.key` and `auth.json` into `./data/` (or run the
+#      one-shot bootstrap commands below).
+#   2. `docker compose up -d` — UDP/TCP 4430 + stats on 9090.
+#
+# One-shot bootstrap (run once, then `docker compose up -d`):
+#   docker compose run --rm dispatch genkey -out /data/server.key
+#   docker compose run --rm dispatch adduser -auth /data/auth.json -user yourname
+
+services:
+  dispatch:
+    build: .
+    image: ghcr.io/arcanearts/dispatch-speed-server:dev
+    container_name: dispatch-speed-server
+    restart: unless-stopped
+    # We need NET_RAW + NET_ADMIN once the NAT44 egress lands (Phase 11).
+    # For now we run unprivileged; the cap_add stanza is documented for
+    # operators who want to forward-port their compose file.
+    # cap_add:
+    #   - NET_ADMIN
+    #   - NET_RAW
+    networks:
+      - dispatch
+    ports:
+      - "4430:4430/udp"
+      - "4430:4430/tcp"
+      # 9090 stays bound to 127.0.0.1 by default so it isn't internet-
+      # facing. Reverse-proxy via your Prometheus's scrape config.
+      - "127.0.0.1:9090:9090/tcp"
+    volumes:
+      - ./data:/data
+    healthcheck:
+      # The image has no shell, so we re-invoke the binary's `stats`
+      # subcommand inside the container as a poor man's HTTP check.
+      test: ["CMD", "/usr/local/bin/dispatch-speed-server", "stats",
+             "-addr", "http://127.0.0.1:9090/stats", "-timeout", "2s"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+networks:
+  dispatch:
+    driver: bridge
