@@ -42,8 +42,10 @@ Future<Uint8List> seal(NoiseTransport transport, Uint8List plaintext) async {
   // First pass: capture the would-be nonce so we can build the header AD.
   int nonce = transport.sendNonce;
   Uint8List hdr = _headerBytes(nonce, flags: 0);
-  ({int nonce, Uint8List ciphertext}) sealed =
-      await transport.seal(hdr, plaintext);
+  ({int nonce, Uint8List ciphertext}) sealed = await transport.seal(
+    hdr,
+    plaintext,
+  );
   // Sanity check — the transport must have used the nonce we
   // predicted. If this ever fires, someone is interleaving seal() calls
   // on a transport that's supposed to be single-owner.
@@ -70,7 +72,8 @@ SealedHeader decodeSealedHeader(Uint8List buf) {
   int magic = bd.getUint16(0);
   if (magic != sealedMagic) {
     throw StateError(
-        'crypto: bad sealed magic: 0x${magic.toRadixString(16).padLeft(4, '0')}');
+      'crypto: bad sealed magic: 0x${magic.toRadixString(16).padLeft(4, '0')}',
+    );
   }
   int version = bd.getUint8(2);
   if (version != sealedVersion) {
@@ -78,11 +81,17 @@ SealedHeader decodeSealedHeader(Uint8List buf) {
   }
   int flags = bd.getUint8(3);
   if (flags != 0) {
-    throw StateError('crypto: reserved sealed flag bits set: 0x${flags.toRadixString(16)}');
+    throw StateError(
+      'crypto: reserved sealed flag bits set: 0x${flags.toRadixString(16)}',
+    );
   }
   int nonce = bd.getUint64(4);
   return SealedHeader(
-      magic: magic, version: version, flags: flags, nonce: nonce);
+    magic: magic,
+    version: version,
+    flags: flags,
+    nonce: nonce,
+  );
 }
 
 /// AEAD-decrypts a wire-format sealed frame.

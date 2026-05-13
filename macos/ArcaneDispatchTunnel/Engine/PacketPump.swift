@@ -9,18 +9,11 @@
 // * Run the policy engine per-packet to pick a link.
 // * Maintain per-flow stickiness in `FlowTracker` so the UI shows stable
 //   link assignments.
-// * Publish flow events (`created`/`bytes`/`closed`) to the shared ring
-//   buffer via `FlowStatsPublisher` so the Dart side's flow inspector can
-//   render live activity without round-tripping through a method channel.
 // * Honor kill-switch semantics: when the engine reports no eligible links
 //   and `killSwitch` is on, every outbound packet is dropped.
 //
-// Phase 7+: the per-flow socket bridge in `FlowForwarder` now actually
-// relays traffic. For each packet we pick a link, then hand the packet
-// to the forwarder which opens an outbound `NWConnection` bound to the
-// link's interface, shuttles bytes both ways, and synthesizes reply
-// packets back into the TUN. The bonded debug encoder still mirrors
-// packets when enabled, but real delivery is the forwarder's job now.
+// Relay mode sends packets through `BondedClient` and
+// `BondedSocketPool`, then writes relay replies back into the TUN.
 
 import Foundation
 import Network
@@ -35,7 +28,6 @@ final class PacketPump {
     private let packetFlow: NEPacketTunnelFlow
     private let queue = DispatchQueue(label: "art.arcane.dispatch.tunnel.pump", qos: .userInitiated)
     private let engine = PolicyEngine()
-    private let publisher = FlowStatsPublisher()
     private var tracker: FlowTracker!
     private let forwarder: FlowForwarder
     /// Cached BSD device name → `NWInterface` for outbound link binding.
@@ -70,14 +62,14 @@ final class PacketPump {
     /// Wraps at u16 — Phase 7 callers are bound by `kBondedMaxPayload` and
     /// the protocol caps the link count well below 2^16.
     private var bondedWireIds: [String: UInt16] = [:]
+    private var bondedSocketPool: BondedSocketPool?
+    private var bondedRelayEndpoint: BondedRelayEndpoint?
 
     init(packetFlow: NEPacketTunnelFlow, policy: ExtensionPolicy) {
         self.packetFlow = packetFlow
         self.policy = policy
         self.forwarder = FlowForwarder(packetFlow: packetFlow, queue: queue)
-        self.tracker = FlowTracker { [weak self] event in
-            self?.publisher.publish(event)
-        }
+        self.tracker = FlowTracker()
     }
 
     func start() {
@@ -85,7 +77,6 @@ final class PacketPump {
             guard let self else { return }
             if self.running { return }
             self.running = true
-            self.publisher.openIfNeeded()
             self.decision = self.engine.evaluate(policy: self.policy, metrics: self.metrics)
             self.rebuildBondedClientIfNeeded()
             self.scheduleSweep()
@@ -107,6 +98,9 @@ final class PacketPump {
             self.forwarder.shutdown()
             self.bondedClient?.dispose()
             self.bondedClient = nil
+            self.bondedSocketPool?.close()
+            self.bondedSocketPool = nil
+            self.bondedRelayEndpoint = nil
         }
     }
 
@@ -171,18 +165,17 @@ final class PacketPump {
             let flow = tracker.observe(packet: packet, direction: .outbound) { [weak self] _ in
                 return self?.assignLink() ?? ""
             }
-            // Real forwarding: relay the packet through an outbound
-            // `NWConnection` bound to the flow's link. Without this the
-            // packets just get classified and dropped, which is why the
-            // tunnel previously felt like "Turning on the thing does
-            // not do anything" — packets went in and never came out.
             let linkId = flow?.linkId ?? assignLink()
+            if let client = bondedClient, bondedRelayEndpoint != nil {
+                client.send(packet)
+                continue
+            }
+
             forwarder.forward(packet: packet, linkId: linkId)
-            // Phase 7: when the debug flag is on, mirror the packet
-            // through the bonded encoder so we can `OSLog`-inspect frames
-            // on real hardware. There's no server yet (Phase 8) — the
-            // encoded bytes are dropped after logging.
             if let client = bondedClient {
+                // No relay endpoint is configured. Keep the bonded encoder
+                // as a local diagnostics mirror, but let FlowForwarder carry
+                // traffic so the tunnel remains usable.
                 client.send(packet)
             }
         }
@@ -203,11 +196,9 @@ final class PacketPump {
     /// its scheduler state when only the eligible link set changed. Runs
     /// on `queue` — never call directly from outside the pump.
     ///
-    /// Phase 7 wiring deliberately keeps the `sendOnLink` callback as a
-    /// log-only stub. Phase 8 will replace it with a real `BondedSocketPool`
-    /// that opens UDP sockets bound to each link's source address.
     private func rebuildBondedClientIfNeeded() {
-        let wantBonded = policy.bondedTransport ?? false
+        let endpoint = BondedRelayEndpoint.parse(policy.serverUrl)
+        let wantBonded = (policy.bondedTransport ?? false) || endpoint != nil
         if !wantBonded {
             if let existing = bondedClient {
                 existing.dispose()
@@ -215,6 +206,9 @@ final class PacketPump {
                 bondedWireIds.removeAll()
                 log.info("bonded transport disabled — encoder torn down")
             }
+            bondedSocketPool?.close()
+            bondedSocketPool = nil
+            bondedRelayEndpoint = nil
             return
         }
         // Build a deterministic wireId mapping from the engine's eligible
@@ -248,6 +242,20 @@ final class PacketPump {
         }
         // Map the policy's bonding mode to the bonded layer enum.
         let mode = bondedMode(policy.mode)
+        if endpoint != bondedRelayEndpoint {
+            bondedSocketPool?.close()
+            bondedSocketPool = nil
+            bondedRelayEndpoint = endpoint
+            if let endpoint {
+                bondedSocketPool = BondedSocketPool(
+                    endpoint: endpoint,
+                    queue: queue,
+                    inbound: { [weak self] bytes in
+                        self?.bondedClient?.onInboundBytes(bytes)
+                    })
+                log.info("relay socket pool configured endpoint=\(endpoint.raw, privacy: .public)")
+            }
+        }
         if bondedClient == nil {
             // First time the flag's been on this session. Pick a random
             // u64 session id; Phase 8 server lookup will use this to route.
@@ -256,10 +264,18 @@ final class PacketPump {
             let client = BondedClient(
                 config: cfg,
                 sendOnLink: { [weak self] linkId, bytes in
-                    self?.log.debug(
-                        "bonded send \(bytes.count, privacy: .public)B on link=\(linkId, privacy: .public)")
+                    guard let self else { return }
+                    if let pool = self.bondedSocketPool {
+                        pool.send(linkId: linkId, bytes: bytes)
+                    } else {
+                        self.log.debug(
+                            "bonded send \(bytes.count, privacy: .public)B on link=\(linkId, privacy: .public)")
+                    }
                 },
                 queue: queue)
+            client.reassembler.onOutbound = { [weak self] packet in
+                self?.writeInboundPacketToFlow(packet)
+            }
             client.updateLinks(states)
             client.start()
             bondedClient = client
@@ -271,6 +287,7 @@ final class PacketPump {
             // cache for in-flight streams).
             bondedClient?.setMode(mode)
         }
+        bondedSocketPool?.updateLinks(linkInterfacesForEligibleLinks())
     }
 
     /// Translate the policy's bonding-mode string into the bonded layer
@@ -331,16 +348,41 @@ final class PacketPump {
     /// current policy + path snapshot. Called on every policy change
     /// and every path update. Cheap: just a dictionary build.
     private func rebuildLinkInterfaces() {
-        var ifaces: [String: NWInterface] = [:]
+        let ifaces = linkInterfacesForEligibleLinks()
         var bsds: [String: String] = [:]
         for slot in decision.eligible {
             guard let bsd = slot.link.interfaceName, !bsd.isEmpty else { continue }
             bsds[slot.link.id] = bsd
+        }
+        forwarder.setLinkInterfaces(ifaces, bsdMap: bsds)
+        bondedSocketPool?.updateLinks(ifaces)
+    }
+
+    private func linkInterfacesForEligibleLinks() -> [String: NWInterface] {
+        var ifaces: [String: NWInterface] = [:]
+        for slot in decision.eligible {
+            guard let bsd = slot.link.interfaceName, !bsd.isEmpty else { continue }
             if let iface = bsdToInterface[bsd] {
                 ifaces[slot.link.id] = iface
             }
         }
-        forwarder.setLinkInterfaces(ifaces, bsdMap: bsds)
+        return ifaces
+    }
+
+    private func writeInboundPacketToFlow(_ packet: Data) {
+        guard !packet.isEmpty else { return }
+        let version = packet.first! >> 4
+        let proto: NSNumber
+        switch version {
+        case 4:
+            proto = NSNumber(value: AF_INET)
+        case 6:
+            proto = NSNumber(value: AF_INET6)
+        default:
+            log.debug("dropping relay packet with unknown IP version=\(version, privacy: .public)")
+            return
+        }
+        packetFlow.writePackets([packet], withProtocols: [proto])
     }
 
     /// Snapshot of per-link bytes since the previous call. Drains the

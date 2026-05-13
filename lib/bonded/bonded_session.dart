@@ -110,8 +110,7 @@ class BondedSessionStats {
   /// Keepalives sent.
   final int keepalives;
 
-  /// Chunks where the active mode fanned out the same seq to multiple
-  /// links (Redundant always, Streaming opportunistically on loss).
+  /// Chunks where the active mode fanned out the same seq to multiple links.
   final int duplicateFanouts;
 
   /// Currently-active bonding mode.
@@ -180,13 +179,14 @@ class BondedSession {
     this.observer,
     this.sealer,
     this.opener,
-  })  : scheduler = scheduler ?? BondedScheduler(),
-        reassembler = reassembler ??
-            BondedReassembler(
-              gapTimeout: config.reassemblerGapTimeout,
-              windowSize: config.reassemblerWindowSize,
-            ),
-        _strategy = strategy ?? BondedModeStrategy.forMode(config.mode);
+  }) : scheduler = scheduler ?? BondedScheduler(),
+       reassembler =
+           reassembler ??
+           BondedReassembler(
+             gapTimeout: config.reassemblerGapTimeout,
+             windowSize: config.reassemblerWindowSize,
+           ),
+       _strategy = strategy ?? BondedModeStrategy.forMode(config.mode);
 
   /// Currently-active mode strategy.
   BondedModeStrategy get strategy => _strategy;
@@ -226,10 +226,7 @@ class BondedSession {
   /// Send [bytes] over the bond. Splits into ≤ [BondedSessionConfig.maxPayload]
   /// chunks; returns the number of bytes scheduled (could be less than the
   /// input if some chunks had no eligible link).
-  ///
-  /// Pass `isRealtime: true` for streaming/voice payloads so the active
-  /// mode strategy uses its QoS lane (lowest-RTT primary + optional fan-out).
-  int send(Uint8List bytes, {bool isRealtime = false}) {
+  int send(Uint8List bytes) {
     if (_disposed || !_started || bytes.isEmpty) {
       return 0;
     }
@@ -240,9 +237,8 @@ class BondedSession {
       if (chunkLen > config.maxPayload) {
         chunkLen = config.maxPayload;
       }
-      Uint8List chunk =
-          Uint8List.sublistView(bytes, offset, offset + chunkLen);
-      bool ok = _sendOne(chunk, isRealtime: isRealtime);
+      Uint8List chunk = Uint8List.sublistView(bytes, offset, offset + chunkLen);
+      bool ok = _sendOne(chunk);
       if (!ok) {
         // No eligible link — stop, caller can retry once a link comes back.
         break;
@@ -274,7 +270,10 @@ class BondedSession {
     if (frame.isAck) {
       // Bookkeeping: free the bytes from the scheduler's inflight counter
       // for the link the packet came back on.
-      scheduler.completeSend(_linkIdForWireId(frame.linkId), frame.payload.length);
+      scheduler.completeSend(
+        _linkIdForWireId(frame.linkId),
+        frame.payload.length,
+      );
       return;
     }
     if (frame.isNak) {
@@ -319,8 +318,7 @@ class BondedSession {
     return BondedSessionStats(
       lastSentSeq: _nextSeq == 0 ? 0 : _nextSeq - 1,
       inbound: reassembler.snapshot(),
-      packetsPerLink:
-          Map<String, int>.unmodifiable(_packetsPerLink),
+      packetsPerLink: Map<String, int>.unmodifiable(_packetsPerLink),
       bytesPerLink: Map<String, int>.unmodifiable(_bytesPerLink),
       retransmissions: _retransmissions,
       keepalives: _keepalives,
@@ -346,11 +344,10 @@ class BondedSession {
   // internals
   // ---------------------------------------------------------------------
 
-  bool _sendOne(Uint8List chunk, {bool isRealtime = false}) {
+  bool _sendOne(Uint8List chunk) {
     BondedChunkPlan plan = _strategy.planChunk(
       bytes: chunk.length,
       scheduler: scheduler,
-      isRealtime: isRealtime,
     );
     if (plan.isEmpty) {
       return false;
@@ -374,8 +371,11 @@ class BondedSession {
       );
       sendOnLink(d.linkId, _sealIfEnabled(frame));
       _packetsPerLink.update(d.linkId, (int v) => v + 1, ifAbsent: () => 1);
-      _bytesPerLink.update(d.linkId, (int v) => v + chunk.length,
-          ifAbsent: () => chunk.length);
+      _bytesPerLink.update(
+        d.linkId,
+        (int v) => v + chunk.length,
+        ifAbsent: () => chunk.length,
+      );
       observer?.call(d);
     }
     if (plan.fanout > 1) {
@@ -432,8 +432,7 @@ class BondedSession {
     double bestRtt = double.infinity;
     LinkPriority? bestBucket;
     for (BondedLinkState s in scheduler.states.values) {
-      if (s.status == LinkStatus.unhealthy ||
-          s.status == LinkStatus.disabled) {
+      if (s.status == LinkStatus.unhealthy || s.status == LinkStatus.disabled) {
         continue;
       }
       if (s.priority == LinkPriority.never) {
@@ -479,8 +478,9 @@ class BondedSession {
         // see this as a TCP retransmit / app-level loss.
         continue;
       }
-      BondedSchedulingDecision? d =
-          scheduler.pickLink(bytes: entry.payload.length);
+      BondedSchedulingDecision? d = scheduler.pickLink(
+        bytes: entry.payload.length,
+      );
       if (d == null) {
         // No healthy link; leave the entry in cache for the next round.
         return;

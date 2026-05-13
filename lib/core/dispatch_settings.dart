@@ -1,6 +1,5 @@
 import 'package:hive/hive.dart';
 
-import 'bonding_mode.dart';
 import 'link.dart';
 import 'policy.dart';
 import '../transport/transport.dart';
@@ -26,6 +25,19 @@ class DispatchSettings {
   /// Current persistent schema version. Bumped if [load] needs to do anything
   /// destructive in the future (Phase 1 stays at 1).
   static const int schemaVersion = 1;
+  static const String defaultRelayUrl = String.fromEnvironment(
+    'ARCANE_DISPATCH_RELAY_URL',
+    defaultValue: 'udp://slc01.qualitynode.com:7777',
+  );
+  static const String defaultRelayToken = String.fromEnvironment(
+    'ARCANE_DISPATCH_RELAY_TOKEN',
+    defaultValue: 'lgnzpJXxSCTr_Xq2Jn_LrEEQQiD1UGnttOqeqePYaKQ',
+  );
+  static const Policy defaultPolicy = Policy(
+    serverUrl: defaultRelayUrl,
+    serverToken: defaultRelayToken,
+    bondedTransport: true,
+  );
 
   static const String _legacyTargetsKey = 'selected_targets';
   static const String _linksKey = 'links_v1';
@@ -56,7 +68,7 @@ class DispatchSettings {
     // Extension entitlement signed in to their build.
     this.transportKind = TransportKind.tunnel,
     this.links = const <Link>[],
-    this.policy = const Policy(),
+    this.policy = defaultPolicy,
   });
 
   /// Legacy view of the selected targets, kept so existing UI code that still
@@ -95,7 +107,10 @@ class DispatchSettings {
   /// underlying [links]. Used by the existing checkbox UI in [home_screen].
   DispatchSettings copyWithSelectedTargets(List<String> targets) {
     List<Link> next = _buildLinksFromTargets(targets, existing: links);
-    return copyWith(links: next, policy: policy.copyWith(links: next));
+    return copyWith(
+      links: next,
+      policy: policy.copyWith(links: next),
+    );
   }
 
   static DispatchSettings load(Box box) {
@@ -123,10 +138,7 @@ class DispatchSettings {
     await box.put('start_proxy_on_launch', startProxyOnLaunch);
     await box.put('hide_on_blur', hideOnBlur);
     await box.put(_transportKindKey, transportKind.wireName);
-    await box.put(
-      _linksKey,
-      links.map((Link link) => link.encode()).toList(),
-    );
+    await box.put(_linksKey, links.map((Link link) => link.encode()).toList());
     await box.put(_policyKey, policy.encode());
     // Mirror to the legacy key so a downgrade keeps the user's picks.
     await box.put(_legacyTargetsKey, selectedTargets);
@@ -170,13 +182,7 @@ class DispatchSettings {
         // Fall through to default policy below.
       }
     }
-    // Default bonding mode is [BondingMode.streaming] (not `speed`) so
-    // realtime traffic — video calls, screen shares, voice — gets sent
-    // down the lowest-latency link automatically while bulk transfers
-    // still bond across every interface. That matches the user-facing
-    // promise of "always prioritize internet connection and latency,
-    // combine the rest for download speed".
-    return Policy(mode: BondingMode.streaming, links: links);
+    return defaultPolicy.copyWith(links: links);
   }
 
   static List<String> _readLegacyTargets(Box box) {

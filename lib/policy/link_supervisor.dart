@@ -83,16 +83,52 @@ class LinkSupervisor {
   final StreamController<LinkHealthEvent> _events =
       StreamController<LinkHealthEvent>.broadcast();
 
+  /// Number of consecutive evaluations a *new* status must hold before
+  /// the supervisor surfaces it on the events stream. Without this the
+  /// 1-Hz link-probe noise causes per-link statuses to flap between
+  /// `healthy` and `unhealthy` whenever a metric (loss, RTT) wobbles
+  /// around the policy threshold — visible in the UI as a card whose
+  /// status text and BondGraphic spoke color rapidly flicker between
+  /// green and red. Three consecutive evaluations (~3 s at the default
+  /// 1-Hz tick) is enough to absorb a single bad sample while still
+  /// reacting quickly to a genuine outage.
+  ///
+  /// `healthy` -> non-healthy transitions still require [_hysteresisCount]
+  /// consecutive non-healthy observations. The reverse direction
+  /// (non-healthy -> healthy) also requires [_hysteresisCount]
+  /// observations so a network that "looks fine for one tick" doesn't
+  /// trigger an immediate green flash.
+  ///
+  /// Hard transitions to/from `disabled` (priority=never) bypass the
+  /// debouncer — that change is user-initiated and should be reflected
+  /// instantly.
+  final int _hysteresisCount;
+
   Policy? _policy;
   final Map<String, LinkMetric> _metrics = <String, LinkMetric>{};
   bool _disposed = false;
   LinkHealthEvent? _last;
 
+  /// Per-link debouncer state: the candidate next-status we've been seeing
+  /// and how many consecutive evaluations have observed it. The supervisor
+  /// only emits the candidate as the published status after the count hits
+  /// [_hysteresisCount]. Cleared whenever a link is removed from the policy.
+  final Map<String, _StatusCandidate> _candidates =
+      <String, _StatusCandidate>{};
+
+  /// Last *published* status per link — what the supervisor actually
+  /// emitted to subscribers, not the raw per-tick verdict. Used by the
+  /// debouncer to decide whether the new evaluation matches the prior
+  /// stable state (no churn) or is trying to introduce a new one.
+  final Map<String, LinkStatus> _publishedStatus = <String, LinkStatus>{};
+
   LinkSupervisor({
     this.engine = const PolicyEngine(),
     this.dataUsedProvider,
     DateTime Function() now = _systemNow,
-  }) : _now = now;
+    int hysteresisCount = 3,
+  }) : _now = now,
+       _hysteresisCount = hysteresisCount;
 
   /// Broadcast stream of health updates. Subscribe in `initState` /
   /// controller init; cancel before disposing the supervisor.
@@ -120,9 +156,16 @@ class LinkSupervisor {
       return;
     }
     _policy = policy;
-    // Drop metrics for links that no longer exist so the cache stays bounded.
+    // Drop metrics + debouncer state for links that no longer exist so
+    // the caches stay bounded.
     Set<String> liveIds = <String>{for (Link link in policy.links) link.id};
     _metrics.removeWhere((String id, LinkMetric _) => !liveIds.contains(id));
+    _candidates.removeWhere(
+      (String id, _StatusCandidate _) => !liveIds.contains(id),
+    );
+    _publishedStatus.removeWhere(
+      (String id, LinkStatus _) => !liveIds.contains(id),
+    );
     _evaluate();
   }
 
@@ -164,51 +207,91 @@ class LinkSupervisor {
     if (policy == null) {
       return;
     }
-    Map<String, int> dataUsed = dataUsedProvider?.call() ?? const <String, int>{};
+    Map<String, int> dataUsed =
+        dataUsedProvider?.call() ?? const <String, int>{};
     PolicyDecision decision = engine.evaluate(
       policy: policy,
       metrics: Map<String, LinkMetric>.unmodifiable(_metrics),
       dataUsedOverride: dataUsed,
     );
 
-    Map<String, LinkStatus> statuses = <String, LinkStatus>{};
+    Map<String, LinkStatus> rawStatuses = <String, LinkStatus>{};
     Set<String> eligibleIds = <String>{
       for (EligibleLink slot in decision.eligible) slot.link.id,
     };
-    Map<String, IneligibilityReason> reasonById =
-        <String, IneligibilityReason>{
+    Map<String, IneligibilityReason> reasonById = <String, IneligibilityReason>{
       for (IneligibleLink i in decision.ineligible) i.link.id: i.reason,
     };
 
     for (Link link in policy.links) {
       if (link.priority == LinkPriority.never) {
-        statuses[link.id] = LinkStatus.disabled;
+        rawStatuses[link.id] = LinkStatus.disabled;
         continue;
       }
       if (eligibleIds.contains(link.id)) {
-        statuses[link.id] = LinkStatus.healthy;
+        rawStatuses[link.id] = LinkStatus.healthy;
         continue;
       }
       IneligibilityReason? reason = reasonById[link.id];
       switch (reason) {
         case IneligibilityReason.groupSuperseded:
           // The link is fine but its group lost the priority cascade.
-          statuses[link.id] = LinkStatus.degraded;
+          rawStatuses[link.id] = LinkStatus.degraded;
           break;
         case IneligibilityReason.highLoss:
         case IneligibilityReason.highRtt:
         case IneligibilityReason.noSource:
         case IneligibilityReason.dataCapExhausted:
-          statuses[link.id] = LinkStatus.unhealthy;
+          rawStatuses[link.id] = LinkStatus.unhealthy;
           break;
         case IneligibilityReason.never:
-          statuses[link.id] = LinkStatus.disabled;
+          rawStatuses[link.id] = LinkStatus.disabled;
           break;
         case null:
-          statuses[link.id] = LinkStatus.unknown;
+          rawStatuses[link.id] = LinkStatus.unknown;
           break;
       }
     }
+
+    // Apply hysteresis: publish a new status only after it has been observed
+    // [_hysteresisCount] consecutive ticks. Otherwise stick with the prior
+    // published status. Hard transitions to/from `disabled` (priority=never)
+    // bypass the debouncer — that change is user-initiated.
+    Map<String, LinkStatus> statuses = <String, LinkStatus>{};
+    rawStatuses.forEach((String id, LinkStatus raw) {
+      LinkStatus? published = _publishedStatus[id];
+      bool isHardTransition =
+          raw == LinkStatus.disabled ||
+          published == LinkStatus.disabled ||
+          published == null;
+      if (isHardTransition) {
+        statuses[id] = raw;
+        _publishedStatus[id] = raw;
+        _candidates.remove(id);
+        return;
+      }
+      if (raw == published) {
+        // Stable — no churn, reset any pending candidate.
+        statuses[id] = raw;
+        _candidates.remove(id);
+        return;
+      }
+      _StatusCandidate? candidate = _candidates[id];
+      if (candidate == null || candidate.status != raw) {
+        // New transition direction — start (or restart) the debouncer.
+        candidate = _StatusCandidate(status: raw, count: 1);
+      } else {
+        candidate.count += 1;
+      }
+      if (candidate.count >= _hysteresisCount) {
+        statuses[id] = raw;
+        _publishedStatus[id] = raw;
+        _candidates.remove(id);
+      } else {
+        _candidates[id] = candidate;
+        statuses[id] = published;
+      }
+    });
 
     bool killSwitch = policy.killSwitch && !decision.hasEligible;
     LinkHealthEvent event = LinkHealthEvent(
@@ -226,4 +309,14 @@ class LinkSupervisor {
   static DateTime _systemNow() {
     return DateTime.now();
   }
+}
+
+/// Internal debouncer state: the candidate next-status the supervisor is
+/// considering for one specific link and the number of consecutive
+/// evaluations that have observed it. See [LinkSupervisor._hysteresisCount].
+class _StatusCandidate {
+  LinkStatus status;
+  int count;
+
+  _StatusCandidate({required this.status, required this.count});
 }

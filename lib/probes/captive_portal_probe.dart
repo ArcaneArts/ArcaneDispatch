@@ -83,12 +83,13 @@ class CaptivePortalProbeOutcome {
 /// Function that performs a single captive-portal probe. Used so tests can
 /// inject a deterministic stand-in for real HTTP. Returns within
 /// [timeout]; treats timeouts as `error`.
-typedef CaptivePortalProbeFn = Future<CaptivePortalProbeOutcome> Function({
-  required Uri target,
-  required InternetAddress? sourceAddress,
-  required Duration timeout,
-  required DateTime now,
-});
+typedef CaptivePortalProbeFn =
+    Future<CaptivePortalProbeOutcome> Function({
+      required Uri target,
+      required InternetAddress? sourceAddress,
+      required Duration timeout,
+      required DateTime now,
+    });
 
 /// Default Apple-style probe target. Public per Apple's documentation:
 /// the page is intentionally short, plaintext, and stable, and Apple
@@ -268,19 +269,16 @@ CaptivePortalProbeOutcome parseHttpResponse(List<int> raw, DateTime now) {
   String headers = text.substring(0, headerEnd);
   String body = text.substring(headerEnd + 4);
   int firstLineEnd = headers.indexOf('\r\n');
-  String statusLine =
-      firstLineEnd < 0 ? headers : headers.substring(0, firstLineEnd);
+  String statusLine = firstLineEnd < 0
+      ? headers
+      : headers.substring(0, firstLineEnd);
   // Status line is "HTTP/1.x CODE REASON".
   List<String> parts = statusLine.split(' ');
   int? code;
   if (parts.length >= 2) {
     code = int.tryParse(parts[1]);
   }
-  return classifyCaptiveResponse(
-    statusCode: code ?? 0,
-    body: body,
-    now: now,
-  );
+  return classifyCaptiveResponse(statusCode: code ?? 0, body: body, now: now);
 }
 
 /// Classify a probe response by status code + body. Exposed for tests so
@@ -348,17 +346,26 @@ class CaptivePortalDetectorConfig {
   final Duration probeTimeout;
 
   /// Number of consecutive identical outcomes required to flip the
-  /// state machine. Defaults to 1 (single-shot, exactly like Apple's
-  /// implementation). Bumping to 2 reduces false positives at the cost of
-  /// taking ~30 s extra to detect a portal.
+  /// state machine. Default is 2 so a single transient failure (e.g.
+  /// the captive endpoint dropped one packet, the link briefly
+  /// re-associated mid-probe) doesn't immediately turn the UI red.
+  /// Combined with [normalInterval] this gives ~60 s to confirm a
+  /// stable state change, which matches Apple's own captive-detection
+  /// behavior in macOS and avoids the "Hometown Wi-Fi keeps flashing
+  /// between green and red every probe tick" symptom users hit when
+  /// their AP is borderline.
+  ///
+  /// Setting to 1 reverts to single-shot behavior (faster detection,
+  /// more false positives). Tests still inject 1 to keep them
+  /// deterministic without having to feed three identical outcomes.
   final int debounceCount;
 
   const CaptivePortalDetectorConfig({
     this.normalInterval = const Duration(seconds: 30),
     this.capturedInterval = const Duration(seconds: 60),
-    this.errorInterval = const Duration(seconds: 30),
+    this.errorInterval = const Duration(seconds: 15),
     this.probeTimeout = const Duration(seconds: 5),
-    this.debounceCount = 1,
+    this.debounceCount = 2,
   });
 }
 
@@ -436,10 +443,10 @@ class CaptivePortalDetector {
     CaptivePortalProbeFn? probe,
     DateTime Function()? now,
     Uri? target,
-  })  : _probe = probe ?? httpCaptivePortalProbe,
-        _resolveSource = resolveSource,
-        _now = now ?? DateTime.now,
-        probeTarget = target ?? appleCaptiveProbeUri;
+  }) : _probe = probe ?? httpCaptivePortalProbe,
+       _resolveSource = resolveSource,
+       _now = now ?? DateTime.now,
+       probeTarget = target ?? appleCaptiveProbeUri;
 
   /// Live stream of state snapshots — only emits when [effective]
   /// changes. The detector also emits the very first observation

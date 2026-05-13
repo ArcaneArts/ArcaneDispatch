@@ -26,12 +26,13 @@ class ProbeOutcome {
 /// [sourceAddress]. Returns within [timeout] (with a synthetic failure on
 /// timeout). Used by [LinkProbe] so unit tests can inject deterministic
 /// behavior in place of real sockets.
-typedef ProbeAttempt = Future<ProbeOutcome> Function({
-  required InternetAddress target,
-  required int port,
-  required InternetAddress? sourceAddress,
-  required Duration timeout,
-});
+typedef ProbeAttempt =
+    Future<ProbeOutcome> Function({
+      required InternetAddress target,
+      required int port,
+      required InternetAddress? sourceAddress,
+      required Duration timeout,
+    });
 
 /// Real TCP-connect probe. Binds the connect to [sourceAddress] (when given)
 /// so we measure per-link RTT instead of whatever the default route uses.

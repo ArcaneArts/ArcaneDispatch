@@ -39,11 +39,12 @@ InternetAddress? resolveLinkSource(
 
 /// Factory used by [LinkProbeService] to construct a [LinkProbe]. Lets tests
 /// inject fakes without forking the service.
-typedef LinkProbeFactory = LinkProbe Function({
-  required Link link,
-  required InternetAddress? Function() resolveSource,
-  LinkProbeConfig config,
-});
+typedef LinkProbeFactory =
+    LinkProbe Function({
+      required Link link,
+      required InternetAddress? Function() resolveSource,
+      LinkProbeConfig config,
+    });
 
 /// Manages the lifecycle of one [LinkProbe] per eligible [Link].
 ///
@@ -185,14 +186,18 @@ class LinkProbeService {
       resolveSource: () => resolveLinkSource(link, _interfaces),
       config: defaultConfig,
     );
-    StreamSubscription<LinkMetric> sub = probe.stream.listen(
-      (LinkMetric metric) {
-        if (!_output.isClosed) {
-          _output.add(metric);
-        }
-      },
+    StreamSubscription<LinkMetric> sub = probe.stream.listen((
+      LinkMetric metric,
+    ) {
+      if (!_output.isClosed) {
+        _output.add(metric);
+      }
+    });
+    _entries[link.id] = _ProbeEntry(
+      link: link,
+      probe: probe,
+      subscription: sub,
     );
-    _entries[link.id] = _ProbeEntry(link: link, probe: probe, subscription: sub);
     probe.start();
   }
 
@@ -213,11 +218,7 @@ class LinkProbeService {
     required InternetAddress? Function() resolveSource,
     LinkProbeConfig config = const LinkProbeConfig(),
   }) {
-    return LinkProbe(
-      link: link,
-      resolveSource: resolveSource,
-      config: config,
-    );
+    return LinkProbe(link: link, resolveSource: resolveSource, config: config);
   }
 }
 

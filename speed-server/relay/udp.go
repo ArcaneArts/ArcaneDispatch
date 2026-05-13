@@ -1,17 +1,17 @@
 // Package relay hosts the bonded transport's server-side machinery.
 //
 // `UDPRelay` is the v0 listener: a single goroutine read-loop that decodes
-// inbound bonded frames, dispatches them to per-session workers, and
-// (eventually) re-encodes outbound traffic back to the client.
+// inbound bonded frames, dispatches them to per-session workers, writes
+// reassembled payloads to a packet device, and re-encodes packet-device
+// replies back to the client.
 //
 // Status (Phase 8.6):
-//   * Decode + per-session reassembly: implemented.
-//   * NAT44 egress: stubbed (the relay logs the would-be public bytes,
-//     so we can verify the on-the-wire protocol end-to-end against the
-//     Dart client without needing raw-socket privileges or a public IP).
-//     Real egress lands in Phase 11 alongside the auto protocol switch.
-//   * Reverse path (server → client bonded frames): stub. The handshake +
-//     ACK/NAK machinery on the server side is also Phase 11 work.
+//   - Decode + per-session reassembly: implemented.
+//   - Packet-device egress: implemented behind an injectable PacketDevice.
+//     Production wires this to a Linux TUN; unit tests use an in-memory fake.
+//   - Reverse path (server → client bonded frames): implemented for packet
+//     replies and NAKs. ACK/control negotiation still belongs to the auth
+//     handshake work.
 //
 // Threading model: one goroutine drains the UDP socket; each session runs
 // in its own goroutine and communicates via an unbuffered channel of
@@ -21,6 +21,7 @@ package relay
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -66,19 +67,32 @@ type UDPRelayConfig struct {
 
 	// Sealer, when set, is called on every outbound frame before being
 	// written to the UDP socket. Mirrors `Opener` on the receive side.
-	// Phase 9 v0 has no outbound traffic from the relay, so this is
-	// reserved for Phase 11 when the reverse path goes live.
 	Sealer func([]byte) ([]byte, error)
+
+	// PacketDevice receives reassembled client packets and produces packets
+	// that should be framed back to the client. A Linux TUN implementation
+	// owns NAT/routing in production; tests pass an in-memory device.
+	PacketDevice PacketDevice
+}
+
+// PacketDevice is the relay-side packet boundary. WritePacket accepts a
+// fully reassembled client packet. Packets emits reverse-path packets that
+// should be framed back to the most recently active session.
+type PacketDevice interface {
+	WritePacket([]byte) error
+	Packets() <-chan []byte
 }
 
 // UDPRelay is the server entry point for the bonded UDP transport.
 type UDPRelay struct {
-	cfg    UDPRelayConfig
-	log    *slog.Logger
-	conn   *net.UDPConn
-	mu     sync.Mutex // guards sessions
-	sess   map[uint64]*udpSession
-	cancel context.CancelFunc
+	cfg           UDPRelayConfig
+	log           *slog.Logger
+	conn          *net.UDPConn
+	mu            sync.Mutex // guards sessions and reverse-path routing state
+	sess          map[uint64]*udpSession
+	downSeq       map[uint64]uint64
+	latestSession uint64
+	cancel        context.CancelFunc
 
 	stats RelayStats
 }
@@ -95,20 +109,23 @@ type RelayStats struct {
 	Naks                uint64
 	BytesIn             uint64
 	BytesEgress         uint64 // post-reassembly application bytes
+	PacketsOut          uint64 // packet-device replies framed to clients
+	BytesOut            uint64 // reverse-path application bytes
 }
 
 // udpSession is the per-(sessionId) state. One goroutine per session
 // keeps the reassembler single-owner so we don't need a mutex inside it.
 type udpSession struct {
-	id         uint64
-	addr       *net.UDPAddr
-	reasm      *bonded.Reassembler
-	inbox      chan inboundFrame
-	lastSeen   time.Time
-	cancel     context.CancelFunc
-	bytesIn    uint64
-	bytesOut   uint64 // application bytes emitted post-reassembly
-	naks       uint64
+	id       uint64
+	addr     *net.UDPAddr
+	linkID   uint16
+	reasm    *bonded.Reassembler
+	inbox    chan inboundFrame
+	lastSeen time.Time
+	cancel   context.CancelFunc
+	bytesIn  uint64
+	bytesOut uint64 // application bytes emitted post-reassembly
+	naks     uint64
 }
 
 type inboundFrame struct {
@@ -140,9 +157,10 @@ func NewUDPRelay(cfg UDPRelayConfig) *UDPRelay {
 		cfg.Logger = slog.Default()
 	}
 	return &UDPRelay{
-		cfg:  cfg,
-		log:  cfg.Logger,
-		sess: make(map[uint64]*udpSession),
+		cfg:     cfg,
+		log:     cfg.Logger,
+		sess:    make(map[uint64]*udpSession),
+		downSeq: make(map[uint64]uint64),
 	}
 }
 
@@ -176,6 +194,9 @@ func (r *UDPRelay) Start(parent context.Context) error {
 		slog.Duration("idle_timeout", r.cfg.SessionIdleTimeout))
 	go r.readLoop(ctx)
 	go r.sweepLoop(ctx)
+	if r.cfg.PacketDevice != nil {
+		go r.packetDeviceLoop(ctx)
+	}
 	return nil
 }
 
@@ -196,6 +217,8 @@ func (r *UDPRelay) Stop() {
 		}
 	}
 	r.sess = make(map[uint64]*udpSession)
+	r.downSeq = make(map[uint64]uint64)
+	r.latestSession = 0
 	r.mu.Unlock()
 }
 
@@ -273,9 +296,10 @@ func (r *UDPRelay) dispatch(parent context.Context, f bonded.Frame, from *net.UD
 		// Bound the inbox to keep one noisy session from OOM'ing the
 		// relay. 256 frames at 1208 B = 309 KB worst-case buffer.
 		s = &udpSession{
-			id:    f.SessionID,
-			addr:  from,
-			inbox: make(chan inboundFrame, 256),
+			id:     f.SessionID,
+			addr:   cloneUDPAddr(from),
+			linkID: f.LinkID,
+			inbox:  make(chan inboundFrame, 256),
 		}
 		cfg := bonded.ReassemblerConfig{
 			WindowSize: r.cfg.WindowSize,
@@ -283,22 +307,10 @@ func (r *UDPRelay) dispatch(parent context.Context, f bonded.Frame, from *net.UD
 		}
 		s.reasm = bonded.NewReassembler(cfg)
 		s.reasm.SetOutbound(func(payload []byte) {
-			s.bytesOut += uint64(len(payload))
-			r.stats.BytesEgress += uint64(len(payload))
-			// Phase 8 v0: log-only NAT44. Phase 11 wires the real egress.
-			r.log.Debug("egress bytes",
-				slog.Uint64("session", s.id),
-				slog.Int("len", len(payload)))
+			r.handleReassembledPayload(s, payload)
 		})
 		s.reasm.SetNak(func(rng bonded.NakRange) {
-			s.naks++
-			r.stats.Naks++
-			r.log.Debug("nak",
-				slog.Uint64("session", s.id),
-				slog.Uint64("start", rng.StartSeq),
-				slog.Uint64("end", rng.EndSeq))
-			// Reverse path TODO (Phase 11): encode rng into a NAK frame
-			// and send back to s.addr. For v0 we just count.
+			r.handleNak(s, rng)
 		})
 		ctx, cancel := context.WithCancel(parent)
 		s.cancel = cancel
@@ -311,8 +323,10 @@ func (r *UDPRelay) dispatch(parent context.Context, f bonded.Frame, from *net.UD
 		// Refresh peer addr so the reverse path always replies to the
 		// last-seen IP — clients swap source addresses mid-session as
 		// their underlying links change.
-		s.addr = from
+		s.addr = cloneUDPAddr(from)
+		s.linkID = f.LinkID
 	}
+	r.latestSession = f.SessionID
 	r.mu.Unlock()
 
 	select {
@@ -323,6 +337,155 @@ func (r *UDPRelay) dispatch(parent context.Context, f bonded.Frame, from *net.UD
 			slog.Uint64("session", s.id),
 			slog.Uint64("seq", f.Seq))
 	}
+}
+
+func (r *UDPRelay) handleReassembledPayload(s *udpSession, payload []byte) {
+	packet := append([]byte(nil), payload...)
+	r.mu.Lock()
+	s.bytesOut += uint64(len(packet))
+	r.stats.BytesEgress += uint64(len(packet))
+	r.mu.Unlock()
+
+	if r.cfg.PacketDevice == nil {
+		r.log.Debug("egress bytes",
+			slog.Uint64("session", s.id),
+			slog.Int("len", len(packet)))
+		return
+	}
+	if err := r.cfg.PacketDevice.WritePacket(packet); err != nil {
+		r.log.Warn("packet device write",
+			slog.Uint64("session", s.id),
+			slog.String("err", err.Error()))
+	}
+}
+
+func (r *UDPRelay) handleNak(s *udpSession, rng bonded.NakRange) {
+	r.mu.Lock()
+	s.naks++
+	r.stats.Naks++
+	r.mu.Unlock()
+
+	r.log.Debug("nak",
+		slog.Uint64("session", s.id),
+		slog.Uint64("start", rng.StartSeq),
+		slog.Uint64("end", rng.EndSeq))
+	r.sendControlToSession(s.id, bonded.FlagNak, encodeNakPayload(rng))
+}
+
+func (r *UDPRelay) packetDeviceLoop(ctx context.Context) {
+	packets := r.cfg.PacketDevice.Packets()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case packet, ok := <-packets:
+			if !ok {
+				return
+			}
+			if len(packet) == 0 {
+				continue
+			}
+			r.sendPacketToLatestSession(packet)
+		}
+	}
+}
+
+func (r *UDPRelay) sendPacketToLatestSession(packet []byte) {
+	r.mu.Lock()
+	sessionID := r.latestSession
+	s := r.sess[sessionID]
+	if s == nil {
+		r.mu.Unlock()
+		r.log.Debug("drop packet device reply without active session",
+			slog.Int("len", len(packet)))
+		return
+	}
+	addr := cloneUDPAddr(s.addr)
+	linkID := s.linkID
+	seq := r.downSeq[sessionID]
+	r.downSeq[sessionID] = seq + 1
+	r.mu.Unlock()
+
+	if r.writeFrame(addr, bonded.EncodeOptions{
+		SessionID: sessionID,
+		Seq:       seq,
+		LinkID:    linkID,
+		Payload:   packet,
+	}) {
+		r.mu.Lock()
+		r.stats.PacketsOut++
+		r.stats.BytesOut += uint64(len(packet))
+		r.mu.Unlock()
+	}
+}
+
+func (r *UDPRelay) sendControlToSession(sessionID uint64, flags uint8, payload []byte) {
+	r.mu.Lock()
+	s := r.sess[sessionID]
+	if s == nil {
+		r.mu.Unlock()
+		return
+	}
+	addr := cloneUDPAddr(s.addr)
+	linkID := s.linkID
+	r.mu.Unlock()
+
+	r.writeFrame(addr, bonded.EncodeOptions{
+		SessionID: sessionID,
+		Seq:       0,
+		LinkID:    linkID,
+		Flags:     flags,
+		Payload:   payload,
+	})
+}
+
+func (r *UDPRelay) writeFrame(addr *net.UDPAddr, opts bonded.EncodeOptions) bool {
+	if r.conn == nil || addr == nil {
+		return false
+	}
+	wire, err := bonded.Encode(opts)
+	if err != nil {
+		r.log.Warn("bonded encode",
+			slog.Uint64("session", opts.SessionID),
+			slog.String("err", err.Error()))
+		return false
+	}
+	if r.cfg.Sealer != nil {
+		sealed, err := r.cfg.Sealer(wire)
+		if err != nil {
+			r.log.Warn("seal outbound",
+				slog.Uint64("session", opts.SessionID),
+				slog.String("err", err.Error()))
+			return false
+		}
+		wire = sealed
+	}
+	if _, err := r.conn.WriteToUDP(wire, addr); err != nil {
+		r.log.Warn("udp write",
+			slog.Uint64("session", opts.SessionID),
+			slog.String("peer", addr.String()),
+			slog.String("err", err.Error()))
+		return false
+	}
+	return true
+}
+
+func encodeNakPayload(rng bonded.NakRange) []byte {
+	payload := make([]byte, 16)
+	binary.BigEndian.PutUint64(payload[0:8], rng.StartSeq)
+	binary.BigEndian.PutUint64(payload[8:16], rng.EndSeq)
+	return payload
+}
+
+func cloneUDPAddr(addr *net.UDPAddr) *net.UDPAddr {
+	if addr == nil {
+		return nil
+	}
+	out := *addr
+	if addr.IP != nil {
+		out.IP = append(net.IP(nil), addr.IP...)
+	}
+	return &out
 }
 
 // sessionLoop is the per-session worker. Owns the reassembler exclusively.

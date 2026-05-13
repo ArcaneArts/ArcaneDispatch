@@ -43,10 +43,10 @@ class TokenBucket {
     required this.refillBytesPerSec,
     int? burstBytes,
     DateTime Function() now = _systemNow,
-  })  : burstBytes = burstBytes ?? math.max(refillBytesPerSec, 0),
-        _now = now,
-        _lastRefill = now(),
-        _tokens = (burstBytes ?? math.max(refillBytesPerSec, 0)).toDouble();
+  }) : burstBytes = burstBytes ?? math.max(refillBytesPerSec, 0),
+       _now = now,
+       _lastRefill = now(),
+       _tokens = (burstBytes ?? math.max(refillBytesPerSec, 0)).toDouble();
 
   /// True when the cap is "unlimited" (refill = 0). Callers can short-circuit
   /// in this case to avoid the async wait entirely.
@@ -123,8 +123,7 @@ class TokenBucket {
       return;
     }
     DateTime now = _now();
-    double elapsedSeconds =
-        now.difference(_lastRefill).inMicroseconds / 1e6;
+    double elapsedSeconds = now.difference(_lastRefill).inMicroseconds / 1e6;
     if (elapsedSeconds <= 0) {
       return;
     }

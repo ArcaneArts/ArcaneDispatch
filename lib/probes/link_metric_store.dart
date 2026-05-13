@@ -105,8 +105,10 @@ class LinkMetricStore {
     if (_disposed) {
       return;
     }
-    List<LinkMetric> buffer =
-        _buffers.putIfAbsent(metric.linkId, () => <LinkMetric>[]);
+    List<LinkMetric> buffer = _buffers.putIfAbsent(
+      metric.linkId,
+      () => <LinkMetric>[],
+    );
     buffer.add(metric);
     while (buffer.length > windowSize) {
       buffer.removeAt(0);

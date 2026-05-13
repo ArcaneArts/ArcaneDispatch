@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:hive/hive.dart';
 
-import '../core/flow_stat.dart';
 import '../core/link.dart';
 import '../core/link_metric.dart';
 import '../core/network_interface_repository.dart';
@@ -40,9 +39,6 @@ class SocksTransportConfig {
 ///
 /// * Policy is consumed as a typed [Policy] (with [Link]s) instead of a list
 ///   of `<target>[/weight]` strings.
-/// * Flow events are surfaced through [flows] in addition to the legacy
-///   event stream, so the new dashboard (Phase 15) can consume them.
-///
 /// Phase 3 layers a per-link [TokenBucket] (speed cap throttle) and a Hive-
 /// backed [DataMeter] (monthly data cap) on top of the same engine. Both are
 /// wired through the SOCKS server's [SocksProxyServer.accountant] hook, so
@@ -56,7 +52,8 @@ class SocksTransport implements Transport {
   final SocksProxyServer Function(
     ProxyEventSink onEvent,
     ByteAccountant accountant,
-  ) _serverFactory;
+  )
+  _serverFactory;
   final WeightedAddressResolver _resolver;
   final NetworkInterfaceRepository _repository;
   final PolicyEngine _engine;
@@ -80,17 +77,10 @@ class SocksTransport implements Transport {
   );
   final StreamController<LinkMetric> _metrics =
       StreamController<LinkMetric>.broadcast();
-  final StreamController<FlowStat> _flows = StreamController<FlowStat>.broadcast();
   final StreamController<ProxyEvent> _events =
       StreamController<ProxyEvent>.broadcast();
 
-  /// Tracks the live [FlowStat] per remote socket so we can emit close events
-  /// with accurate timestamps. Populated when the underlying server reports a
-  /// `connectionOpened` event.
-  final Map<String, FlowStat> _openFlows = <String, FlowStat>{};
-
-  /// Resolves `linkId -> Link` for the live policy so we can stamp flows with
-  /// the right link metadata.
+  /// Resolves `linkId -> Link` for the live policy.
   Map<String, Link> _linksById = const <String, Link>{};
 
   /// Resolves `local-address -> linkId` for fast flow attribution. Filled in
@@ -141,20 +131,23 @@ class SocksTransport implements Transport {
     SocksProxyServer Function(
       ProxyEventSink onEvent,
       ByteAccountant accountant,
-    )? serverFactory,
+    )?
+    serverFactory,
     WeightedAddressResolver resolver = const WeightedAddressResolver(),
     PolicyEngine engine = const PolicyEngine(),
     this.config = const SocksTransportConfig(),
     Box? meterStorage,
     DataMeter? dataMeter,
-  })  : _repository = repository,
-        _serverFactory = serverFactory ??
-            ((ProxyEventSink onEvent, ByteAccountant accountant) =>
-                SocksProxyServer(onEvent: onEvent, accountant: accountant)),
-        _resolver = resolver,
-        _engine = engine,
-        _meterStorage = meterStorage {
-    _dataMeter = dataMeter ??
+  }) : _repository = repository,
+       _serverFactory =
+           serverFactory ??
+           ((ProxyEventSink onEvent, ByteAccountant accountant) =>
+               SocksProxyServer(onEvent: onEvent, accountant: accountant)),
+       _resolver = resolver,
+       _engine = engine,
+       _meterStorage = meterStorage {
+    _dataMeter =
+        dataMeter ??
         (_meterStorage != null
             ? DataMeter(storage: _meterStorage)
             : _InMemoryDataMeter());
@@ -188,11 +181,6 @@ class SocksTransport implements Transport {
   }
 
   @override
-  Stream<FlowStat> get flows {
-    return _flows.stream;
-  }
-
-  @override
   Stream<ProxyEvent> get events {
     return _events.stream;
   }
@@ -208,15 +196,17 @@ class SocksTransport implements Transport {
 
     _state.add(TransportStatus(state: TransportState.starting));
     try {
-      List<NetworkInterfaceSnapshot> interfaces =
-          await _repository.listUsableInterfaces();
+      List<NetworkInterfaceSnapshot> interfaces = await _repository
+          .listUsableInterfaces();
 
       // Resolve every non-Never link to an address first so the engine sees
       // the same universe of candidates the user configured. The engine then
       // applies priority/health/cap gates to pick which subset actually carries
       // traffic in this start cycle.
-      Map<String, ResolvedWeightedAddress> resolvedByLinkId =
-          _resolveLinksById(policy.links, interfaces);
+      Map<String, ResolvedWeightedAddress> resolvedByLinkId = _resolveLinksById(
+        policy.links,
+        interfaces,
+      );
 
       PolicyDecision decision = _engine.evaluate(
         policy: policy,
@@ -230,8 +220,10 @@ class SocksTransport implements Transport {
         );
       }
 
-      List<ResolvedWeightedAddress> resolved =
-          eligibleToResolved(decision.eligible, resolvedByLinkId);
+      List<ResolvedWeightedAddress> resolved = eligibleToResolved(
+        decision.eligible,
+        resolvedByLinkId,
+      );
       if (resolved.isEmpty) {
         throw const DispatchConfigException(
           'No eligible link could be resolved to a local IP address.',
@@ -240,7 +232,9 @@ class SocksTransport implements Transport {
 
       _currentPolicy = policy;
       _lastDecision = decision;
-      _linksById = <String, Link>{for (Link link in policy.links) link.id: link};
+      _linksById = <String, Link>{
+        for (Link link in policy.links) link.id: link,
+      };
       _linkIdByLocalAddress = _buildAddressIndexFromEligible(
         decision.eligible,
         resolvedByLinkId,
@@ -253,13 +247,13 @@ class SocksTransport implements Transport {
         addresses: resolved,
       );
 
-      String endpoint = '${config.listenHost}:${_server.boundPort ?? config.listenPort}';
+      String endpoint =
+          '${config.listenHost}:${_server.boundPort ?? config.listenPort}';
       _state.add(
         TransportStatus(state: TransportState.running, endpoint: endpoint),
       );
       // Begin publishing 1 Hz throughput samples. This is what feeds the
-      // power-card "Download / Upload" cells and the per-link bandwidth
-      // sparklines on the Activity tab.
+      // power-card "Download / Upload" cells and the per-link bandwidth.
       _startThroughputTimer();
     } catch (error) {
       _state.add(
@@ -294,13 +288,15 @@ class SocksTransport implements Transport {
   Future<void> updatePolicy(Policy policy) async {
     // The SOCKS engine doesn't support hot-reload of source addresses today,
     // so we restart when the link set actually changes. Other policy fields
-    // (mode, killSwitch, streamingDetection) are no-ops for SOCKS in Phase 1.
+    // are no-ops for SOCKS in Phase 1.
     if (_server.isRunning) {
       await stop();
       await start(policy);
     } else {
       _currentPolicy = policy;
-      _linksById = <String, Link>{for (Link link in policy.links) link.id: link};
+      _linksById = <String, Link>{
+        for (Link link in policy.links) link.id: link,
+      };
       _rebuildBuckets(policy.links);
     }
   }
@@ -355,7 +351,6 @@ class SocksTransport implements Transport {
     await _dataMeter.dispose();
     await _state.close();
     await _metrics.close();
-    await _flows.close();
     await _events.close();
   }
 
@@ -458,12 +453,9 @@ class SocksTransport implements Transport {
     DateTime now = DateTime.now();
     Set<String> ids = <String>{..._linksById.keys};
     for (String linkId in ids) {
-      _metrics.add(LinkMetric(
-        linkId: linkId,
-        capturedAt: now,
-        bpsIn: 0,
-        bpsOut: 0,
-      ));
+      _metrics.add(
+        LinkMetric(linkId: linkId, capturedAt: now, bpsIn: 0, bpsOut: 0),
+      );
     }
     _bytesInWindow.clear();
     _bytesOutWindow.clear();
@@ -520,12 +512,14 @@ class SocksTransport implements Transport {
     List<RawWeightedAddress> raw = eligibleForResolution
         .map((Link link) => RawWeightedAddress.parse(link.toLegacyTarget()))
         .toList();
-    List<ResolvedWeightedAddress> resolved =
-        _resolver.resolve(raw, interfaces);
+    List<ResolvedWeightedAddress> resolved = _resolver.resolve(raw, interfaces);
     Map<String, ResolvedWeightedAddress> byId =
         <String, ResolvedWeightedAddress>{};
-    for (int i = 0; i < eligibleForResolution.length && i < resolved.length;
-        i += 1) {
+    for (
+      int i = 0;
+      i < eligibleForResolution.length && i < resolved.length;
+      i += 1
+    ) {
       byId[eligibleForResolution[i].id] = resolved[i];
     }
     return byId;
@@ -553,52 +547,6 @@ class SocksTransport implements Transport {
 
   void _handleServerEvent(ProxyEvent event) {
     _events.add(event);
-    switch (event.type) {
-      case ProxyEventType.connectionOpened:
-        _onConnectionOpened(event);
-        break;
-      case ProxyEventType.connectionClosed:
-        _onConnectionClosed(event);
-        break;
-      case ProxyEventType.info:
-      case ProxyEventType.warning:
-      case ProxyEventType.error:
-        break;
-    }
-  }
-
-  void _onConnectionOpened(ProxyEvent event) {
-    if (event.remoteAddress == null || event.remotePort == null) {
-      return;
-    }
-    String flowId = _flowId(event);
-    String localAddress = event.localAddress?.address ?? '';
-    String linkId = _linkIdByLocalAddress[localAddress] ??
-        (_linksById.keys.isEmpty ? 'unknown' : _linksById.keys.first);
-    FlowStat flow = FlowStat(
-      flowId: flowId,
-      linkId: linkId,
-      remoteAddress: event.remoteAddress!.address,
-      remotePort: event.remotePort!,
-      openedAt: event.timestamp,
-    );
-    _openFlows[flowId] = flow;
-    _flows.add(flow);
-  }
-
-  void _onConnectionClosed(ProxyEvent event) {
-    String flowId = _flowId(event);
-    FlowStat? open = _openFlows.remove(flowId);
-    if (open == null) {
-      return;
-    }
-    _flows.add(open.close(at: event.timestamp));
-  }
-
-  String _flowId(ProxyEvent event) {
-    String remote = event.remoteAddress?.address ?? 'unknown';
-    int port = event.remotePort ?? 0;
-    return '$remote:$port@${event.timestamp.microsecondsSinceEpoch}';
   }
 }
 
@@ -616,7 +564,11 @@ class _InMemoryDataMeter implements DataMeter {
     if (bytes <= 0) {
       return;
     }
-    _counts.update(link.id, (int current) => current + bytes, ifAbsent: () => bytes);
+    _counts.update(
+      link.id,
+      (int current) => current + bytes,
+      ifAbsent: () => bytes,
+    );
   }
 
   @override

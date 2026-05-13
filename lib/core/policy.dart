@@ -27,10 +27,6 @@ class Policy {
   /// default route during outages.
   final bool killSwitch;
 
-  /// When true, the streaming detector tags real-time flows (Zoom/WebRTC/SNI
-  /// allow-list) and the scheduler upgrades them to the RT queue.
-  final bool streamingDetection;
-
   /// DNS servers pushed by the tunnel (`tun` settings). Empty falls back to
   /// system defaults.
   final List<String> dnsServers;
@@ -39,20 +35,16 @@ class Policy {
   /// the extension. Empty = everything goes through the tunnel.
   final List<String> splitTunnelAllowList;
 
-  /// Speed Server URL (e.g. `udp://relay.example.com:443`). `null` puts the
-  /// transport in local-only mode.
+  /// Relay URL (e.g. `udp://relay.example.com:4430`). `null` means no relay
+  /// is configured yet.
   final String? serverUrl;
 
   /// Opaque per-client auth token (issued by the server's `genkey`/`adduser`
   /// commands). Stored in the App Group for the extension to read.
   final String? serverToken;
 
-  /// Debug flag: when true, the macOS Network Extension exercises the
-  /// `BondedClient` encode path for every outbound packet in addition to
-  /// the legacy per-flow forwarder. With no `serverUrl` set, frames are
-  /// `OSLog`-inspectable but not actually transmitted — Phase 8 will
-  /// connect this path to a real Speed Server. Always `false` in
-  /// production for now.
+  /// When true, the macOS Network Extension sends packet flow through
+  /// the relay-backed bonded transport.
   final bool bondedTransport;
 
   /// When true, each link runs a recurring HTTP probe against Apple's
@@ -72,7 +64,6 @@ class Policy {
     this.mode = BondingMode.speed,
     this.links = const <Link>[],
     this.killSwitch = false,
-    this.streamingDetection = true,
     this.dnsServers = const <String>[],
     this.splitTunnelAllowList = const <String>[],
     this.serverUrl,
@@ -85,7 +76,6 @@ class Policy {
     BondingMode? mode,
     List<Link>? links,
     bool? killSwitch,
-    bool? streamingDetection,
     List<String>? dnsServers,
     List<String>? splitTunnelAllowList,
     Object? serverUrl = _sentinel,
@@ -97,7 +87,6 @@ class Policy {
       mode: mode ?? this.mode,
       links: links ?? this.links,
       killSwitch: killSwitch ?? this.killSwitch,
-      streamingDetection: streamingDetection ?? this.streamingDetection,
       dnsServers: dnsServers ?? this.dnsServers,
       splitTunnelAllowList: splitTunnelAllowList ?? this.splitTunnelAllowList,
       serverUrl: identical(serverUrl, _sentinel)
@@ -139,7 +128,6 @@ class Policy {
       'mode': mode.wireName,
       'links': links.map((Link link) => link.toJson()).toList(),
       'killSwitch': killSwitch,
-      'streamingDetection': streamingDetection,
       'dnsServers': dnsServers,
       'splitTunnelAllowList': splitTunnelAllowList,
       'serverUrl': serverUrl,
@@ -165,14 +153,15 @@ class Policy {
       mode: BondingModeCodec.parse(json['mode']),
       links: links,
       killSwitch: _coerceBool(json['killSwitch'], fallback: false),
-      streamingDetection: _coerceBool(json['streamingDetection'], fallback: true),
       dnsServers: _coerceStringList(json['dnsServers']),
       splitTunnelAllowList: _coerceStringList(json['splitTunnelAllowList']),
       serverUrl: json['serverUrl'] as String?,
       serverToken: json['serverToken'] as String?,
       bondedTransport: _coerceBool(json['bondedTransport'], fallback: false),
-      captivePortalAssist:
-          _coerceBool(json['captivePortalAssist'], fallback: true),
+      captivePortalAssist: _coerceBool(
+        json['captivePortalAssist'],
+        fallback: true,
+      ),
     );
   }
 

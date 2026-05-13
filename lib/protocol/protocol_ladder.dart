@@ -1,19 +1,15 @@
-// Auto protocol switch for the bonded transport (Phase 11).
+// Auto protocol switch for the bonded relay transport.
 //
 // Each link negotiates one of:
-//   * UDP / 443 (preferred — lowest overhead, natural fit for the bonded
+//   * UDP / 4430 (preferred — lowest overhead, natural fit for the bonded
 //     framer which is already datagram-shaped).
-//   * TCP / 443 (carriers that block UDP egress on port 443 still let TCP
+//   * TCP / 4430 (carriers that block UDP egress still let TCP
 //     through; the bonded frame is length-prefixed so it tunnels fine).
 //   * TLS / 443 with an HTTP/1.1 `Upgrade` (DPI middleboxes that intercept
 //     port 443 and only allow valid TLS).
 //
 // The ladder is *per-link* — the bonded scheduler doesn't know which
 // transport each link uses, only that `sendOnLink(linkId, bytes)` works.
-// During the session, if a link's UDP transport sees > 5 % loss AND no
-// other link is dropping, the bonded session re-runs the ladder on that
-// link only.
-//
 // Mirrored on the Swift side by
 // `macos/ArcaneDispatchTunnel/Bonded/ProtocolLadder.swift` and on the
 // Go side by the relay accepting all three protocols. The Dart side is
@@ -110,10 +106,10 @@ class ProbeResult {
   }
 }
 
-/// Abstract "an open, writable channel to the speed server on this
-/// protocol". Real implementations live in the platform-specific layer
-/// (Swift extension for macOS, eventually a `dart:io` Socket-based
-/// version for the Pair & Share Dart side).
+/// Abstract "an open, writable channel to the relay on this protocol".
+/// Real implementations live in the platform-specific layer (Swift
+/// extension for macOS, eventually a `dart:io` Socket-based version for
+/// other platforms).
 ///
 /// The unit test bench injects a fake here so the ladder logic is
 /// testable without booking real sockets.
@@ -217,10 +213,7 @@ class ProtocolLadder {
   /// Single-rung helper exposed for tests that want to drive one probe
   /// in isolation (e.g. a "what if we re-probe UDP after recovery"
   /// scenario).
-  Future<ProbeResult> tryStep(
-    LinkProtocol p,
-    LinkProtocolProbe probe,
-  ) {
+  Future<ProbeResult> tryStep(LinkProtocol p, LinkProtocolProbe probe) {
     return _runWithTimeout(probe, p);
   }
 
@@ -274,8 +267,9 @@ class LadderResult {
       // Caller should normally only call this on success. Provide a
       // sensible fallback (chose nothing, all rungs rejected) so the
       // UI doesn't crash.
-      List<LinkProtocol> rejected =
-          attempts.map((ProbeResult r) => r.protocol).toList();
+      List<LinkProtocol> rejected = attempts
+          .map((ProbeResult r) => r.protocol)
+          .toList();
       return LinkProtocolDecision(
         chosen: rejected.isNotEmpty ? rejected.last : LinkProtocol.udp443,
         rejected: rejected,

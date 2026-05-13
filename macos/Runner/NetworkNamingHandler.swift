@@ -163,15 +163,14 @@ final class NetworkNamingHandler: NSObject, CLLocationManagerDelegate {
     ///   * Ethernet adapters whether plugged in or not (the user can
     ///     plug them in later and Dispatch will pick them up).
     ///   * `iPhone USB`, `Bluetooth PAN`, USB-tether adapters — saved
-    ///     entries so the user *knows* Dispatch will leverage them when
-    ///     they connect their phone or pair a tether device.
+    ///     entries so the user knows Dispatch will leverage them when
+    ///     they connect their phone.
     ///   * Bluetooth PAN — surfaced even when no Bluetooth-tether device
-    ///     is currently paired, with `isCurrentlyAvailable=false`, so
-    ///     the UI can suggest pairing one.
+    ///     is active, with `isCurrentlyAvailable=false`.
     ///
     /// Each entry carries `isCurrentlyAvailable=true` iff the BSD device
     /// is listed by `ifconfig -lu` (i.e. up + reachable). Per-service
-    /// VPN entries (PairVPN, ProtonVPN, Speedify, Arcane Dispatch
+    /// VPN entries (ProtonVPN, Speedify, Arcane Dispatch
     /// itself) are filtered out — they're virtual transports built on
     /// top of the other links, not networks the user "connects to".
     func listKnownServices() -> [[String: Any?]] {
@@ -267,8 +266,8 @@ final class NetworkNamingHandler: NSObject, CLLocationManagerDelegate {
     ///     (2) iPhone USB
     ///     (Hardware Port: iPhone USB, Device: en8)
     ///
-    ///     (3) PairVPN
-    ///     (Hardware Port: com.mobileco.PairVPN, Device: )
+    ///     (3) ExampleVPN
+    ///     (Hardware Port: com.example.vpn, Device: )
     ///
     /// We walk the lines two at a time: a numbered service header followed
     /// by its `(Hardware Port: …, Device: …)` continuation line.

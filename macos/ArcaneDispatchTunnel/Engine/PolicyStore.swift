@@ -55,13 +55,16 @@ struct ExtensionPolicy: Codable {
     let mode: String
     let killSwitch: Bool
     let links: [PolicyLink]
-    /// Debug flag: when true, PacketPump routes outbound packets through a
-    /// `BondedClient` in addition to (not instead of) the legacy per-flow
-    /// path. The bonded frames have nowhere to go until Phase 8 ships the
-    /// Speed Server — the wiring exists so we can `OSLog`-inspect encoded
-    /// bytes on real hardware and benchmark the encoder before there's a
-    /// remote endpoint. Defaults to `false` when absent (older Dart
-    /// builds don't emit the field).
+    /// Relay URL for the server-backed tunnel, for example
+    /// `udp://relay.example.com:4430` or `relay.example.com:4430`.
+    let serverUrl: String?
+    /// Bearer token staged by the container app. Auth is negotiated by the
+    /// relay handshake; PacketPump only needs to know whether relay mode is
+    /// configured.
+    let serverToken: String?
+    /// When true, PacketPump routes outbound packets through the bonded
+    /// relay path. A non-empty serverUrl also enables relay mode so older
+    /// UI builds that only set the endpoint still get the intended path.
     let bondedTransport: Bool?
     /// When true, the container app's `CaptivePortalDetector` is allowed
     /// to demote links via policy updates. The extension itself doesn't

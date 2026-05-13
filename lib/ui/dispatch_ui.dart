@@ -17,9 +17,9 @@ class DispatchColors {
 
   /// Stable per-link color derived deterministically from the link's id.
   ///
-  /// The dashboard uses this for sparkline strokes, link-card accents, and
-  /// flow inspector rows so the same link reads the same color everywhere
-  /// at a glance — Speedify-style. The hue is hashed mod 360 with a fixed
+  /// The dashboard uses this for sparkline strokes and link-card accents
+  /// so the same link reads the same color everywhere at a glance. The hue
+  /// is hashed mod 360 with a fixed
   /// saturation/lightness window chosen for contrast against
   /// [DispatchColors.panel].
   ///
@@ -186,14 +186,7 @@ class DenseIconButton extends StatelessWidget {
 /// Selects how a [LinkMetric] should be extracted into a single double value
 /// for plotting / badging. Each kind also defines its own "good", "warn", and
 /// "danger" thresholds so a single badge can self-color from raw data.
-enum MetricKind {
-  rtt,
-  jitter,
-  loss,
-  mos,
-  throughputDown,
-  throughputUp,
-}
+enum MetricKind { rtt, jitter, loss, mos, throughputDown, throughputUp }
 
 extension MetricKindAccessors on MetricKind {
   /// Short label rendered in [MetricBadge]'s title row.
@@ -285,9 +278,7 @@ extension MetricKindAccessors on MetricKind {
     switch (this) {
       case MetricKind.rtt:
       case MetricKind.jitter:
-        return value < 10
-            ? value.toStringAsFixed(1)
-            : value.toStringAsFixed(0);
+        return value < 10 ? value.toStringAsFixed(1) : value.toStringAsFixed(0);
       case MetricKind.loss:
         return value.toStringAsFixed(value < 1 ? 2 : 1);
       case MetricKind.mos:
@@ -494,11 +485,7 @@ class Sparkline extends StatelessWidget {
     return SizedBox(
       height: height,
       child: CustomPaint(
-        painter: SparklinePainter(
-          samples: samples,
-          kind: kind,
-          color: color,
-        ),
+        painter: SparklinePainter(samples: samples, kind: kind, color: color),
         size: Size.infinite,
       ),
     );

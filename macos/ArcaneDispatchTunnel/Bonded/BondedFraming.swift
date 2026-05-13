@@ -41,9 +41,8 @@ public struct BondedFlags {
     public static let ack: UInt8 = 0x01
     public static let nak: UInt8 = 0x02
     public static let keepalive: UInt8 = 0x04
-    public static let realtime: UInt8 = 0x08
     public static let retransmit: UInt8 = 0x10
-    public static let definedMask: UInt8 = 0x1f
+    public static let definedMask: UInt8 = 0x17
 }
 
 /// Decoded bonded frame. `payload` is a copy so the caller can keep it
@@ -60,7 +59,6 @@ public struct BondedFrame {
     public var isAck: Bool { (flags & BondedFlags.ack) != 0 }
     public var isNak: Bool { (flags & BondedFlags.nak) != 0 }
     public var isKeepalive: Bool { (flags & BondedFlags.keepalive) != 0 }
-    public var isRealtime: Bool { (flags & BondedFlags.realtime) != 0 }
     public var isRetransmit: Bool { (flags & BondedFlags.retransmit) != 0 }
 }
 

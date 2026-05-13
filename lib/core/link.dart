@@ -42,38 +42,6 @@ extension LinkPriorityCodec on LinkPriority {
 /// Coarse health state of a [Link] as seen by the supervisor.
 enum LinkStatus { unknown, healthy, degraded, unhealthy, disabled }
 
-/// Source-of-bytes classification for a [Link]. Most uplinks are
-/// [LinkKind.local] (a real network interface on this machine). Paired
-/// peers (Phase 13 "Pair & Share") show up as [LinkKind.paired] so the
-/// dispatcher can treat them as virtual interfaces that need an extra
-/// hop through the peer's bonded server.
-enum LinkKind { local, paired }
-
-extension LinkKindCodec on LinkKind {
-  String get wireName {
-    switch (this) {
-      case LinkKind.local:
-        return 'local';
-      case LinkKind.paired:
-        return 'paired';
-    }
-  }
-
-  static LinkKind parse(Object? value, {LinkKind fallback = LinkKind.local}) {
-    if (value is LinkKind) {
-      return value;
-    }
-    if (value is String) {
-      for (LinkKind kind in LinkKind.values) {
-        if (kind.wireName == value) {
-          return kind;
-        }
-      }
-    }
-    return fallback;
-  }
-}
-
 extension LinkStatusCodec on LinkStatus {
   String get wireName {
     switch (this) {
@@ -122,7 +90,7 @@ extension LinkStatusCodec on LinkStatus {
 /// * [interfaceName] — Optional system interface name (e.g. `en0`). When null,
 ///   [sourceAddress] alone is used; either must resolve to a usable source IP.
 /// * [sourceAddress] — Literal source IP/CIDR override. Free-form because we
-///   need both v4 and v6, plus eventual virtual links (Pair & Share).
+///   need both v4 and v6.
 /// * [priority] — Routing bucket; see [LinkPriority].
 /// * [weight] — Integer weight inside the priority bucket. Maps onto the
 ///   legacy `<target>/<weight>` syntax. Kept as int for fixed-point dispatch.
@@ -146,16 +114,6 @@ class Link {
   final int dataUsedBytes;
   final String? billingCycleAnchor;
   final LinkStatus status;
-  /// What kind of uplink this is. `local` for real interfaces, `paired`
-  /// for a Pair & Share peer that bridges its internet.
-  final LinkKind kind;
-  /// For `LinkKind.paired` only: the `host:port` of the peer's bonded
-  /// endpoint. Ignored for local links.
-  final String? pairedEndpoint;
-  /// For `LinkKind.paired` only: hex fingerprint (first 16 hex chars of
-  /// SHA-256(peerPublicKey)) used to display "connected to: 8f…" and to
-  /// reject mismatched re-pairs.
-  final String? pairedFingerprint;
 
   const Link({
     required this.id,
@@ -169,9 +127,6 @@ class Link {
     this.dataUsedBytes = 0,
     this.billingCycleAnchor,
     this.status = LinkStatus.unknown,
-    this.kind = LinkKind.local,
-    this.pairedEndpoint,
-    this.pairedFingerprint,
   });
 
   /// Legacy `<target>[/weight]` tokens migrate to a [Link] via this factory.
@@ -189,7 +144,8 @@ class Link {
         weight = parsed;
       }
     }
-    bool looksLikeIp = RegExp(r'[:.]').hasMatch(target) && !target.contains(' ');
+    bool looksLikeIp =
+        RegExp(r'[:.]').hasMatch(target) && !target.contains(' ');
     return Link(
       id: 'legacy:$target',
       label: target,
@@ -218,9 +174,6 @@ class Link {
     int? dataUsedBytes,
     Object? billingCycleAnchor = _sentinel,
     LinkStatus? status,
-    LinkKind? kind,
-    Object? pairedEndpoint = _sentinel,
-    Object? pairedFingerprint = _sentinel,
   }) {
     return Link(
       id: id ?? this.id,
@@ -244,13 +197,6 @@ class Link {
           ? this.billingCycleAnchor
           : billingCycleAnchor as String?,
       status: status ?? this.status,
-      kind: kind ?? this.kind,
-      pairedEndpoint: identical(pairedEndpoint, _sentinel)
-          ? this.pairedEndpoint
-          : pairedEndpoint as String?,
-      pairedFingerprint: identical(pairedFingerprint, _sentinel)
-          ? this.pairedFingerprint
-          : pairedFingerprint as String?,
     );
   }
 
@@ -267,9 +213,6 @@ class Link {
       'dataUsedBytes': dataUsedBytes,
       'billingCycleAnchor': billingCycleAnchor,
       'status': status.wireName,
-      'kind': kind.wireName,
-      'pairedEndpoint': pairedEndpoint,
-      'pairedFingerprint': pairedFingerprint,
     };
   }
 
@@ -286,9 +229,6 @@ class Link {
       dataUsedBytes: _coercePositiveInt(json['dataUsedBytes']) ?? 0,
       billingCycleAnchor: json['billingCycleAnchor'] as String?,
       status: LinkStatusCodec.parse(json['status']),
-      kind: LinkKindCodec.parse(json['kind']),
-      pairedEndpoint: json['pairedEndpoint'] as String?,
-      pairedFingerprint: json['pairedFingerprint'] as String?,
     );
   }
 

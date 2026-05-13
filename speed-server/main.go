@@ -8,10 +8,10 @@
 // Status: Phase 8 of `plans/2026-05-11-speedify-clone-v1.md`. The current
 // build provides:
 //
-//   * `genkey`  — generate a fresh server ed25519 keypair on disk
-//   * `adduser` — append a client token to the auth store
-//   * `serve`   — start the UDP relay (TCP/TLS land in Phase 11)
-//   * `stats`   — print Prometheus-style counters from the live process
+//   - `genkey`  — generate a fresh server ed25519 keypair on disk
+//   - `adduser` — append a client token to the auth store
+//   - `serve`   — start the UDP/TCP relay listeners
+//   - `stats`   — print Prometheus-style counters from the live process
 //
 // We deliberately keep this layer dependency-free beyond the Go standard
 // library; cgo'd crypto primitives land in Phase 9 alongside the real
@@ -85,29 +85,64 @@ func main() {
 func runServe(args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	udpAddr := fs.String("udp", ":4430", "UDP listen address for bonded frames (\"\" to disable)")
-	tcpAddr := fs.String("tcp", "", "TCP listen address for bonded frames (\"\" to disable)")
+	tcpAddr := fs.String("tcp", ":4430", "TCP listen address for bonded frames (\"\" to disable)")
 	tlsAddr := fs.String("tls", "", "TLS-on-443 listen address (HTTP/1.1 Upgrade) (\"\" to disable)")
 	tlsCert := fs.String("tls-cert", "", "Path to PEM-encoded server certificate (required with -tls)")
 	tlsKey := fs.String("tls-key", "", "Path to PEM-encoded private key (required with -tls)")
-	statsAddr := fs.String("stats", ":9090", "HTTP listen address for /stats")
+	statsAddr := fs.String("stats", "127.0.0.1:9090", "HTTP listen address for /stats")
+	tunName := fs.String("tun", "", "Linux TUN device for relay egress (e.g. dispatch0; empty keeps log-only egress)")
+	clientIP := fs.String("client-ip", "10.42.0.2", "Client tunnel IPv4 used on the relay TUN")
+	serverIP := fs.String("server-ip", "10.42.0.1", "Server tunnel IPv4 used on the relay TUN")
+	tunMTU := fs.Int("tun-mtu", 1400, "MTU for the relay TUN device")
+	configureTun := fs.Bool("configure-tun", true, "Configure TUN address, forwarding, and MASQUERADE")
 	authPath := fs.String("auth", "./auth.json", "Path to the auth store JSON (Phase 9)")
 	keyPath := fs.String("key", "./server.key", "Path to the server key file (Phase 9)")
+	logLevelFlag := fs.String("log-level", "info", "Log level: debug, info, warn, error")
 	idle := fs.Duration("idle-timeout", 5*time.Minute, "Reap sessions idle longer than this")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	logLevel, err := parseLogLevel(*logLevelFlag)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
 	log.Info("serve starting",
 		slog.String("udp", *udpAddr),
 		slog.String("tcp", *tcpAddr),
 		slog.String("tls", *tlsAddr),
 		slog.String("stats", *statsAddr),
+		slog.String("log_level", *logLevelFlag),
+		slog.String("tun", *tunName),
+		slog.String("server_ip", *serverIP),
+		slog.String("client_ip", *clientIP),
 		slog.String("auth", *authPath),
 		slog.String("key", *keyPath))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	var packetDevice relay.PacketDevice
+	var tunDevice *relay.TunPacketDevice
+	if *tunName != "" {
+		device, err := relay.NewTunPacketDevice(relay.TunConfig{
+			Name:      *tunName,
+			ServerIP:  *serverIP,
+			ClientIP:  *clientIP,
+			MTU:       *tunMTU,
+			Configure: *configureTun,
+			Logger:    log,
+		})
+		if err != nil {
+			log.Error("tun start", slog.String("err", err.Error()))
+			return 1
+		}
+		tunDevice = device
+		packetDevice = device
+		defer func() { _ = tunDevice.Close() }()
+	}
 
 	var udp *relay.UDPRelay
 	if *udpAddr != "" {
@@ -115,6 +150,7 @@ func runServe(args []string) int {
 			ListenAddr:         *udpAddr,
 			SessionIdleTimeout: *idle,
 			Logger:             log,
+			PacketDevice:       packetDevice,
 		})
 		if err := udp.Start(ctx); err != nil {
 			log.Error("udp relay start", slog.String("err", err.Error()))
@@ -186,6 +222,21 @@ func runServe(args []string) int {
 	return 0
 }
 
+func parseLogLevel(raw string) (slog.Level, error) {
+	switch raw {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return slog.LevelInfo, fmt.Errorf("invalid -log-level %q; use debug, info, warn, or error", raw)
+	}
+}
+
 // startStatsServer hosts a single Prometheus-style endpoint that scrapes
 // the relay counters across every enabled transport. We intentionally
 // avoid the prometheus client lib — the surface is small enough that
@@ -203,6 +254,8 @@ func startStatsServer(addr string, udp *relay.UDPRelay, tcp *relay.TCPRelay, tls
 			fmt.Fprintf(w, "dispatch_packets_accepted{transport=\"udp\"} %d\n", s.PacketsAccepted)
 			fmt.Fprintf(w, "dispatch_bytes_in{transport=\"udp\"} %d\n", s.BytesIn)
 			fmt.Fprintf(w, "dispatch_bytes_egress{transport=\"udp\"} %d\n", s.BytesEgress)
+			fmt.Fprintf(w, "dispatch_packets_out{transport=\"udp\"} %d\n", s.PacketsOut)
+			fmt.Fprintf(w, "dispatch_bytes_out{transport=\"udp\"} %d\n", s.BytesOut)
 			fmt.Fprintf(w, "dispatch_naks{transport=\"udp\"} %d\n", s.Naks)
 			fmt.Fprintf(w, "dispatch_sessions{transport=\"udp\"} %d\n", s.Sessions)
 		}

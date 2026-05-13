@@ -1,0 +1,12 @@
+public-key: XIszzY+DY9lSwn+G1cHKSvH7uhrYIWWNXs05FKuQj0Y=
+client: arcane
+user=arcane token=lgnzpJXxSCTr_Xq2Jn_LrEEQQiD1UGnttOqeqePYaKQ
+
+Runtime folder: ./arcane-dispatch-relay-env
+Start: ./start.sh
+Stop: ./stop.sh
+Status: ./status.sh
+Stats: ./stats.sh
+Client UDP endpoint: udp://slc01.qualitynode.com:7777
+Client TCP endpoint: tcp://slc01.qualitynode.com:7778
+Logs: logs/relay.log

@@ -124,9 +124,7 @@ class PolicyEngineThresholds {
 class PolicyEngine {
   final PolicyEngineThresholds thresholds;
 
-  const PolicyEngine({
-    this.thresholds = const PolicyEngineThresholds(),
-  });
+  const PolicyEngine({this.thresholds = const PolicyEngineThresholds()});
 
   /// Evaluate [policy] against [metrics].
   ///
@@ -147,18 +145,16 @@ class PolicyEngine {
 
     for (Link link in policy.links) {
       if (link.priority == LinkPriority.never) {
-        ineligible.add(IneligibleLink(
-          link: link,
-          reason: IneligibilityReason.never,
-        ));
+        ineligible.add(
+          IneligibleLink(link: link, reason: IneligibilityReason.never),
+        );
         continue;
       }
       if ((link.interfaceName == null || link.interfaceName!.isEmpty) &&
           (link.sourceAddress == null || link.sourceAddress!.isEmpty)) {
-        ineligible.add(IneligibleLink(
-          link: link,
-          reason: IneligibilityReason.noSource,
-        ));
+        ineligible.add(
+          IneligibleLink(link: link, reason: IneligibilityReason.noSource),
+        );
         continue;
       }
 
@@ -166,28 +162,28 @@ class PolicyEngine {
       if (metric != null) {
         double? loss = metric.loss;
         if (loss != null && loss > thresholds.maxLoss) {
-          ineligible.add(IneligibleLink(
-            link: link,
-            reason: IneligibilityReason.highLoss,
-          ));
+          ineligible.add(
+            IneligibleLink(link: link, reason: IneligibilityReason.highLoss),
+          );
           continue;
         }
         double? rtt = metric.rttMs;
         if (rtt != null && rtt > thresholds.maxRttMs) {
-          ineligible.add(IneligibleLink(
-            link: link,
-            reason: IneligibilityReason.highRtt,
-          ));
+          ineligible.add(
+            IneligibleLink(link: link, reason: IneligibilityReason.highRtt),
+          );
           continue;
         }
       }
 
       int dataUsed = dataUsedOverride[link.id] ?? link.dataUsedBytes;
       if (link.dataCapBytes != null && dataUsed >= link.dataCapBytes!) {
-        ineligible.add(IneligibleLink(
-          link: link,
-          reason: IneligibilityReason.dataCapExhausted,
-        ));
+        ineligible.add(
+          IneligibleLink(
+            link: link,
+            reason: IneligibilityReason.dataCapExhausted,
+          ),
+        );
         continue;
       }
 
@@ -232,10 +228,12 @@ class PolicyEngine {
           continue;
         }
         for (Link link in entry.value) {
-          ineligible.add(IneligibleLink(
-            link: link,
-            reason: IneligibilityReason.groupSuperseded,
-          ));
+          ineligible.add(
+            IneligibleLink(
+              link: link,
+              reason: IneligibilityReason.groupSuperseded,
+            ),
+          );
         }
       }
     }
@@ -292,8 +290,9 @@ class PolicyEngine {
         maxConfiguredCap = link.speedCapBps!;
       }
     }
-    int uncappedSentinel =
-        maxConfiguredCap > 0 ? maxConfiguredCap * 10 : 1000 * 1000 * 1000;
+    int uncappedSentinel = maxConfiguredCap > 0
+        ? maxConfiguredCap * 10
+        : 1000 * 1000 * 1000;
     List<double> raw = <double>[
       for (Link link in members)
         (link.speedCapBps ?? uncappedSentinel).toDouble(),
@@ -303,13 +302,16 @@ class PolicyEngine {
       return <int>[for (Link _ in members) 1];
     }
     List<double> shares = <double>[
-      for (double v in raw) (v / sum).clamp(
-        thresholds.minNormalizedShare,
-        thresholds.maxNormalizedShare,
-      ),
+      for (double v in raw)
+        (v / sum).clamp(
+          thresholds.minNormalizedShare,
+          thresholds.maxNormalizedShare,
+        ),
     ];
-    double normalize =
-        shares.fold<double>(0.0, (double acc, double v) => acc + v);
+    double normalize = shares.fold<double>(
+      0.0,
+      (double acc, double v) => acc + v,
+    );
     if (normalize <= 0) {
       return <int>[for (Link _ in members) 1];
     }

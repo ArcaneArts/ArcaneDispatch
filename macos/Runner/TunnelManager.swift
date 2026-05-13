@@ -34,15 +34,10 @@ private enum TunnelMethod {
     static let reloadPolicy     = "reloadPolicy"
     static let status           = "status"
     static let writePolicy      = "writePolicy"
-    /// Returns the absolute filesystem path to `flow_stats.bin` inside the
-    /// App Group container so the Dart `FlowStatsReader` can read the
-    /// shared ring buffer the extension writes to.
-    static let flowStatsPath    = "flowStatsPath"
-    /// Persist the Speed Server endpoint + bearer token in the App Group
-    /// container. Phase 9 will pin this against the real Noise IK
-    /// handshake; for now the extension just stages it next to policy.json.
+    /// Persist the relay endpoint + bearer token in the App Group
+    /// container next to policy.json.
     static let setServer        = "setServer"
-    /// Read the configured Speed Server back. Returns endpoint + a
+    /// Read the configured relay back. Returns endpoint + a
     /// `tokenSet` flag — never the bearer secret itself.
     static let getServer        = "getServer"
     /// Returns this client's persistent Noise IK public key as a base64
@@ -77,7 +72,7 @@ private enum TunnelStatus: String {
     private let extensionBundleId = "art.arcane.ArcaneDispatch.tunnel"
     private let appGroupId = "group.art.arcane.dispatch"
     private let policyFileName = "policy.json"
-    /// File the extension reads to learn which Speed Server to bond to.
+    /// File the extension reads to learn which relay to bond to.
     /// Plain JSON: `{"endpoint":"host:port","token":"..."}`. Lives next
     /// to policy.json inside the App Group container so it inherits the
     /// same atomic-write guarantees and is unreadable to other processes
@@ -148,8 +143,6 @@ private enum TunnelStatus: String {
             result(writePolicy(jsonString: json))
         case TunnelMethod.status:
             result(currentStatusPayload())
-        case TunnelMethod.flowStatsPath:
-            result(flowStatsPath())
         case TunnelMethod.setServer:
             guard let args = call.arguments as? [String: Any],
                   let endpoint = args["endpoint"] as? String,
@@ -540,23 +533,10 @@ private enum TunnelStatus: String {
         ]
     }
 
-    /// Absolute path to `flow_stats.bin` inside the App Group container, or
-    /// nil when the entitlement is missing. Returned as a plain string so the
-    /// Dart channel can hand it straight to `dart:io`.
-    private func flowStatsPath() -> String? {
-        guard let containerURL = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: appGroupId) else {
-            log.error("flowStatsPath: App Group container missing — check entitlements")
-            return nil
-        }
-        return containerURL.appendingPathComponent("flow_stats.bin").path
-    }
+    // MARK: - Relay config
 
-    // MARK: - Speed Server config (Phase 8.12)
-
-    /// Persist the configured Speed Server. Returns true on success. Empty
-    /// `endpoint` AND empty `token` clears the file so the extension falls
-    /// back to local mode.
+    /// Persist the configured relay. Returns true on success. Empty
+    /// `endpoint` AND empty `token` clears the file.
     @discardableResult
     private func setServer(endpoint: String, token: String) -> Bool {
         guard let containerURL = FileManager.default
@@ -748,7 +728,7 @@ private struct TunnelMessage: Codable {
     }
 }
 
-/// Persisted Speed Server credentials. Mirror of the Dart
+/// Persisted relay credentials. Mirror of the Dart
 /// `TunnelServerConfig` (without the bearer token round-tripped back).
 /// Kept Codable so JSONEncoder/Decoder can do the IO; deliberately
 /// internal to avoid the token leaking into other targets.
@@ -764,4 +744,3 @@ private struct ServerConfig: Codable {
 // ever migrate to a System Extension (.systemextension), the delegate +
 // `SystemExtensionOutcome` enum will need to come back along with the
 // activation request in `installExtension`.
-

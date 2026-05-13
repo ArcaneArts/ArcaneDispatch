@@ -7,16 +7,12 @@
 //      that identifies the flow it belongs to.
 //   2. Keeps a hash table of live flows keyed by that 5-tuple, each tagged
 //      with the linkId the `PolicyEngine` decided to send/receive it on.
-//   3. Emits `FlowEvent`s as flows are created, accumulate bytes, and close
-//      so the `FlowStatsPublisher` can mirror them to the App Group ring
-//      buffer for the Dart UI's live flow inspector.
 //
 // Deliberately ignores anything more than the absolute minimum we need:
 // no IPv6 extension headers, no IP fragmentation, no TCP option parsing.
 // The reassembly/encryption/etc. all happen later (Phase 7+).
 
 import Foundation
-import OSLog
 
 /// Address family the flow lives in. Stored alongside the addresses so the
 /// stringly-typed `localAddress`/`remoteAddress` doesn't have to be parsed
@@ -69,50 +65,16 @@ struct Flow {
     /// Wall-clock seconds since Unix epoch of the last byte we observed in
     /// either direction. Drives idle-sweep based GC.
     var lastSeen: TimeInterval
-    /// QoS verdict — `true` means the bonded scheduler's RT lane.
-    var isRealtime: Bool
-}
-
-/// Event the publisher will push to the ring buffer.
-struct FlowEvent {
-    enum Kind: UInt8 {
-        case created = 1
-        case bytes = 2
-        case closed = 3
-    }
-    let kind: Kind
-    let flow: Flow
-    let timestamp: TimeInterval
 }
 
 /// Tracker + minimal parser. Single-threaded by contract — `PacketPump`
 /// pins everything to `tunnel-io` so no locking is needed inside.
 final class FlowTracker {
     typealias LinkAssigner = (FlowKey) -> String?
-    typealias EventSink = (FlowEvent) -> Void
 
-    private let log = Logger(subsystem: "art.arcane.dispatch.tunnel", category: "flow")
-    private let onEvent: EventSink
     private var flows: [FlowKey: Flow] = [:]
-    private var byId: [UInt64: FlowKey] = [:]
     private var nextId: UInt64 = 1
-    private let streamingClassifier: StreamingClassifier
-
-    /// Emit a `bytes` event no more often than once per flow per
-    /// `bytesEventInterval` seconds; otherwise we'd publish a packet's worth
-    /// of update at line rate.
-    let bytesEventInterval: TimeInterval
-    private var lastByteEventAt: [UInt64: TimeInterval] = [:]
-
-    init(
-        bytesEventInterval: TimeInterval = 0.25,
-        streamingClassifier: StreamingClassifier = StreamingClassifier(),
-        onEvent: @escaping EventSink
-    ) {
-        self.bytesEventInterval = bytesEventInterval
-        self.streamingClassifier = streamingClassifier
-        self.onEvent = onEvent
-    }
+    init() {}
 
     /// Observe one packet. If the packet's 5-tuple is parseable, we either
     /// create a new flow (calling `linkAssigner` to pick the outbound link)
@@ -133,7 +95,6 @@ final class FlowTracker {
         let now = Date().timeIntervalSince1970
 
         if var flow = flows[key] {
-            // Existing flow — bump counters, possibly emit a `bytes` event.
             if direction == .outbound {
                 flow.bytesOut &+= UInt64(payloadLen)
             } else {
@@ -141,13 +102,10 @@ final class FlowTracker {
             }
             flow.lastSeen = now
             flows[key] = flow
-            maybeEmitBytes(flow: flow, now: now)
             return flow
         }
 
-        // New flow — assign a link, classify QoS, emit `created`.
         let linkId = linkAssigner(key) ?? ""
-        let isRealtime = classifyRealtime(key: key)
         let flow = Flow(
             id: nextId,
             key: key,
@@ -155,101 +113,23 @@ final class FlowTracker {
             bytesOut: direction == .outbound ? UInt64(payloadLen) : 0,
             bytesIn: direction == .inbound ? UInt64(payloadLen) : 0,
             createdAt: now,
-            lastSeen: now,
-            isRealtime: isRealtime
+            lastSeen: now
         )
         nextId &+= 1
         flows[key] = flow
-        byId[flow.id] = key
-        lastByteEventAt[flow.id] = now
-        onEvent(FlowEvent(kind: .created, flow: flow, timestamp: now))
         return flow
     }
 
-    /// Drop flows that haven't seen traffic in `idleTimeout`. Emits `closed`
-    /// events for each. Call from `PacketPump` on a coarse timer (every
-    /// ~5 s is plenty for UI accuracy).
+    /// Drop flows that haven't seen traffic in `idleTimeout`.
     func sweep(idleTimeout: TimeInterval) {
         let now = Date().timeIntervalSince1970
         let stale = flows.values.filter { now - $0.lastSeen > idleTimeout }
         for flow in stale {
             flows.removeValue(forKey: flow.key)
-            byId.removeValue(forKey: flow.id)
-            lastByteEventAt.removeValue(forKey: flow.id)
-            onEvent(FlowEvent(kind: .closed, flow: flow, timestamp: now))
         }
-    }
-
-    /// Force-close a single flow (e.g. RST observed). Idempotent.
-    func close(flowId: UInt64) {
-        guard let key = byId[flowId], let flow = flows[key] else { return }
-        flows.removeValue(forKey: key)
-        byId.removeValue(forKey: flowId)
-        lastByteEventAt.removeValue(forKey: flowId)
-        onEvent(FlowEvent(kind: .closed, flow: flow, timestamp: Date().timeIntervalSince1970))
-    }
-
-    /// Live snapshot for introspection. Allocating; called from the publisher
-    /// when the Dart side asks for a one-shot dump.
-    func snapshot() -> [Flow] {
-        return Array(flows.values)
     }
 
     // MARK: - Internals -------------------------------------------------------
-
-    /// Build a probe from the 5-tuple and ask the classifier.
-    private func classifyRealtime(key: FlowKey) -> Bool {
-        var v4: [UInt8]? = nil
-        var v6: [UInt8]? = nil
-        switch key.family {
-        case .ipv4:
-            v4 = parseDottedQuad(key.remoteAddress)
-        case .ipv6:
-            v6 = parseColonHex(key.remoteAddress)
-        }
-        let probe = StreamingFlowProbe(
-            destPort: key.remotePort,
-            transport: key.networkProtocol == 17 ? .udp : .tcp,
-            destIpV4: v4,
-            destIpV6: v6,
-            sni: nil,
-            processName: nil
-        )
-        return streamingClassifier.classify(probe) == .realtime
-    }
-
-    private func parseDottedQuad(_ text: String) -> [UInt8]? {
-        let parts = text.split(separator: ".")
-        guard parts.count == 4 else { return nil }
-        var out = [UInt8]()
-        out.reserveCapacity(4)
-        for p in parts {
-            guard let v = UInt8(p) else { return nil }
-            out.append(v)
-        }
-        return out
-    }
-
-    private func parseColonHex(_ text: String) -> [UInt8]? {
-        let groups = text.split(separator: ":")
-        guard groups.count == 8 else { return nil }
-        var out = [UInt8]()
-        out.reserveCapacity(16)
-        for g in groups {
-            guard let v = UInt16(g, radix: 16) else { return nil }
-            out.append(UInt8((v >> 8) & 0xFF))
-            out.append(UInt8(v & 0xFF))
-        }
-        return out
-    }
-
-    private func maybeEmitBytes(flow: Flow, now: TimeInterval) {
-        let last = lastByteEventAt[flow.id] ?? 0
-        if now - last >= bytesEventInterval {
-            lastByteEventAt[flow.id] = now
-            onEvent(FlowEvent(kind: .bytes, flow: flow, timestamp: now))
-        }
-    }
 
     /// Parse the absolute minimum needed for a 5-tuple. Returns nil on any
     /// packet we don't recognize. Side-effect free.

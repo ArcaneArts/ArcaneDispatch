@@ -142,14 +142,16 @@ class TunnelChannel {
   final MethodChannel _channel;
 
   TunnelChannel({MethodChannel? channel})
-      : _channel = channel ?? const MethodChannel(channelName);
+    : _channel = channel ?? const MethodChannel(channelName);
 
   /// Submit the System Extension activation request. Idempotent: if the
   /// extension is already running, the platform returns `true` and we
   /// resolve to [TunnelInstallResult.ok].
   Future<TunnelInstallResult> installExtension() async {
     try {
-      Object? response = await _channel.invokeMethod<Object?>('installExtension');
+      Object? response = await _channel.invokeMethod<Object?>(
+        'installExtension',
+      );
       if (response is bool && response) {
         return TunnelInstallResult.ok();
       }
@@ -229,41 +231,22 @@ class TunnelChannel {
     }
   }
 
-  /// Absolute filesystem path to the `flow_stats.bin` ring buffer the
-  /// extension writes inside the App Group container. Returns null when the
-  /// container isn't reachable (entitlement misconfig). Used by
-  /// [FlowStatsReader] to mmap the shared file.
-  Future<String?> flowStatsPath() async {
-    try {
-      Object? response = await _channel.invokeMethod<Object?>('flowStatsPath');
-      if (response is String) {
-        return response;
-      }
-      return null;
-    } on MissingPluginException {
-      throw TunnelUnavailableException();
-    }
-  }
-
-  /// Tell the extension which Speed Server to talk to. The endpoint is a
+  /// Tell the extension which relay to talk to. The endpoint is a
   /// `host:port` literal (e.g. `relay.example.com:4430`) and the bearer
-  /// `token` is the value `dispatch-speed-server adduser` printed.
+  /// `token` is the value issued by the relay auth store.
   ///
   /// We round-trip through the App Group container so the extension can
-  /// pick up changes without a tunnel restart — see Phase 8.12 of the
-  /// master plan and the matching Swift handler in
-  /// `macos/Runner/TunnelManager.swift`.
+  /// pick up changes without a tunnel restart.
   ///
-  /// `endpoint` empty + `token` empty clears the configuration and falls
-  /// back to local mode (Phase 16).
-  Future<bool> setServer({required String endpoint, required String token}) async {
+  /// `endpoint` empty + `token` empty clears the relay configuration.
+  Future<bool> setServer({
+    required String endpoint,
+    required String token,
+  }) async {
     try {
       Object? response = await _channel.invokeMethod<Object?>(
         'setServer',
-        <String, Object?>{
-          'endpoint': endpoint,
-          'token': token,
-        },
+        <String, Object?>{'endpoint': endpoint, 'token': token},
       );
       return response == true;
     } on MissingPluginException {
@@ -271,7 +254,7 @@ class TunnelChannel {
     }
   }
 
-  /// Read the currently-configured Speed Server (if any). Returned map has
+  /// Read the currently-configured relay (if any). Returned map has
   /// `endpoint` (string) and a `tokenSet` (bool) — we deliberately do not
   /// surface the bearer token to the UI to minimise the chance of it ending
   /// up in screenshots or log scrapes.
@@ -279,7 +262,9 @@ class TunnelChannel {
     try {
       Object? response = await _channel.invokeMethod<Object?>('getServer');
       if (response is Map) {
-        return TunnelServerConfig.fromPlatform(response.cast<Object?, Object?>());
+        return TunnelServerConfig.fromPlatform(
+          response.cast<Object?, Object?>(),
+        );
       }
       return TunnelServerConfig.empty();
     } on MissingPluginException {
@@ -294,7 +279,9 @@ class TunnelChannel {
   /// available (non-macOS hosts during tests).
   Future<String?> getClientPublicKey() async {
     try {
-      Object? response = await _channel.invokeMethod<Object?>('getClientPublicKey');
+      Object? response = await _channel.invokeMethod<Object?>(
+        'getClientPublicKey',
+      );
       if (response is String) {
         return response;
       }
@@ -305,7 +292,7 @@ class TunnelChannel {
   }
 
   /// Persist the responder's static public key (the operator paste-blob
-  /// next to the Speed Server URL). Pass an empty string to clear. The
+  /// next to the relay URL). Pass an empty string to clear. The
   /// extension reads this on `startTunnel` to seed the Noise IK
   /// initiator state. Returns true on success.
   Future<bool> setResponderPublicKey(String publicKeyBase64) async {
@@ -345,11 +332,13 @@ class TunnelChannel {
         if (linkId == null || linkId.isEmpty) {
           continue;
         }
-        out.add(TunnelThroughputSample(
-          linkId: linkId,
-          bytesIn: (raw['bytesIn'] as num?)?.toInt() ?? 0,
-          bytesOut: (raw['bytesOut'] as num?)?.toInt() ?? 0,
-        ));
+        out.add(
+          TunnelThroughputSample(
+            linkId: linkId,
+            bytesIn: (raw['bytesIn'] as num?)?.toInt() ?? 0,
+            bytesOut: (raw['bytesOut'] as num?)?.toInt() ?? 0,
+          ),
+        );
       }
       return out;
     } on MissingPluginException {
@@ -371,12 +360,12 @@ class TunnelUnavailableException implements Exception {
   }
 }
 
-/// View of the persisted Speed Server config. The Swift side never echoes
+/// View of the persisted relay config. The Swift side never echoes
 /// the bearer token back over the channel — only a `tokenSet` flag — so
 /// the UI can render "configured ✓" without ever holding the secret.
 class TunnelServerConfig {
   /// `host:port` literal of the configured relay. Empty string means
-  /// "no server configured", in which case the tunnel runs in local mode.
+  /// no relay is configured.
   final String endpoint;
 
   /// True iff a non-empty bearer token is stored alongside the endpoint.
@@ -396,7 +385,7 @@ class TunnelServerConfig {
   }
 
   /// Convenience helper for the UI: are we ready to use the bonded
-  /// transport, or should we keep the user on local mode?
+  /// transport?
   bool get isConfigured => endpoint.isNotEmpty && tokenSet;
 }
 

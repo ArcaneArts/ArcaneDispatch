@@ -49,9 +49,8 @@ public struct BondedLinkState {
     public var rttMs: Double
     public var bandwidthBps: Double
     public var inflightBytes: Int
-    /// Observed packet-loss fraction, 0.0–1.0. Drives Streaming-mode's
-    /// duplicate-on-loss decision. 0 means "unknown" — strategies treat
-    /// it as "no problem".
+    /// Observed packet-loss fraction, 0.0–1.0. 0 means "unknown" —
+    /// strategies treat it as "no problem".
     public var lossFraction: Double
 
     public init(
@@ -136,9 +135,8 @@ public final class BondedScheduler {
     /// when no link is eligible — caller should drop or queue.
     ///
     /// `inflightFraction` scales the BDP cap used in the credit formula.
-    /// Speed mode passes 1.0 (default); Streaming mode shrinks it to 0.25
-    /// to keep queueing delay minimal. Values outside [0.05, 1.0] are
-    /// clamped.
+    /// Speed mode passes 1.0 by default. Values outside [0.05, 1.0]
+    /// are clamped.
     public func pickLink(bytes: Int, inflightFraction: Double = 1.0) -> BondedSchedulingDecision? {
         if statesMap.isEmpty || bytes <= 0 { return nil }
         var frac = inflightFraction
@@ -207,9 +205,9 @@ public final class BondedScheduler {
         statesMap[linkId] = s
     }
 
-    /// Public credit accessor for strategies (e.g. `LocalStrategy`) that
-    /// want to evaluate non-default link populations without invoking the
-    /// booking side-effect of `pickLink`. Returns 0 when the link is
+    /// Public credit accessor for strategies that want to evaluate
+    /// non-default link populations without invoking the booking
+    /// side-effect of `pickLink`. Returns 0 when the link is
     /// unknown. Mirrors Dart `BondedScheduler.creditFor`.
     public func creditFor(linkId: String, inflightFraction: Double = 1.0) -> Double {
         guard let s = statesMap[linkId] else { return 0 }

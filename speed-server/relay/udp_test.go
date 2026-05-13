@@ -4,14 +4,15 @@
 // it with packets built by the bonded package. We rely on the relay's
 // `Snapshot()` to observe state — no internal field access.
 //
-// We don't validate egress payloads yet because Phase 8 v0 deliberately
-// stubs the NAT44 path; the byte counters are the meaningful assertion.
-// Real egress E2E coverage lands in Phase 11.
+// Packet egress/replies are exercised through an in-memory PacketDevice so
+// these tests can run without Linux TUN privileges.
 
 package relay
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"net"
 	"testing"
 	"time"
@@ -88,6 +89,47 @@ func wait(t *testing.T, r *UDPRelay, deadline time.Duration, pred func(RelayStat
 	return final
 }
 
+func readFrame(t *testing.T, conn *net.UDPConn, deadline time.Duration) bonded.Frame {
+	t.Helper()
+	buf := make([]byte, 1500)
+	if err := conn.SetReadDeadline(time.Now().Add(deadline)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
+	n, _, err := conn.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("read frame: %v", err)
+	}
+	frame, err := bonded.Decode(buf[:n])
+	if err != nil {
+		t.Fatalf("decode relay frame: %v", err)
+	}
+	return frame
+}
+
+type fakePacketDevice struct {
+	writes chan []byte
+	reads  chan []byte
+}
+
+func newFakePacketDevice() *fakePacketDevice {
+	return &fakePacketDevice{
+		writes: make(chan []byte, 16),
+		reads:  make(chan []byte, 16),
+	}
+}
+
+func (d *fakePacketDevice) WritePacket(packet []byte) error {
+	copyPacket := append([]byte(nil), packet...)
+	d.writes <- copyPacket
+	return nil
+}
+
+func (d *fakePacketDevice) Packets() <-chan []byte { return d.reads }
+
+func (d *fakePacketDevice) inject(packet []byte) {
+	d.reads <- append([]byte(nil), packet...)
+}
+
 func TestUDPRelay_DecodesAndDeliversInOrderFrames(t *testing.T) {
 	r, conn := newLoopbackRelay(t)
 	relayAddr := r.ListenAddr()
@@ -113,6 +155,64 @@ func TestUDPRelay_DecodesAndDeliversInOrderFrames(t *testing.T) {
 	}
 }
 
+func TestUDPRelay_WritesReassembledPayloadToPacketDevice(t *testing.T) {
+	device := newFakePacketDevice()
+	r, conn := newLoopbackRelayWith(t, UDPRelayConfig{PacketDevice: device})
+	relayAddr := r.ListenAddr()
+	packet := []byte{0x45, 0x00, 0x00, 0x28, 0x99}
+
+	send(t, conn, relayAddr, bonded.EncodeOptions{
+		SessionID: 0xCAFE,
+		Seq:       0,
+		LinkID:    7,
+		Payload:   packet,
+	})
+
+	select {
+	case got := <-device.writes:
+		if !bytes.Equal(got, packet) {
+			t.Fatalf("packet device payload mismatch: got %x want %x", got, packet)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("timeout waiting for packet device write")
+	}
+}
+
+func TestUDPRelay_FramesPacketDeviceRepliesToLatestClient(t *testing.T) {
+	device := newFakePacketDevice()
+	r, conn := newLoopbackRelayWith(t, UDPRelayConfig{PacketDevice: device})
+	relayAddr := r.ListenAddr()
+
+	send(t, conn, relayAddr, bonded.EncodeOptions{
+		SessionID: 0x1234,
+		Seq:       0,
+		LinkID:    11,
+		Payload:   []byte{0x45, 0x00, 0x00, 0x14},
+	})
+	wait(t, r, 500*time.Millisecond, func(s RelayStats) bool {
+		return s.BytesEgress >= 4
+	})
+
+	reply := []byte{0x45, 0x00, 0x00, 0x34, 0xAB, 0xCD}
+	device.inject(reply)
+	frame := readFrame(t, conn, 500*time.Millisecond)
+	if frame.SessionID != 0x1234 {
+		t.Fatalf("wrong session id: got %#x", frame.SessionID)
+	}
+	if frame.Seq != 0 {
+		t.Fatalf("first downstream seq should be 0, got %d", frame.Seq)
+	}
+	if frame.LinkID != 11 {
+		t.Fatalf("reply should use latest link id 11, got %d", frame.LinkID)
+	}
+	if !bytes.Equal(frame.Payload, reply) {
+		t.Fatalf("reply payload mismatch: got %x want %x", frame.Payload, reply)
+	}
+	wait(t, r, 500*time.Millisecond, func(s RelayStats) bool {
+		return s.PacketsOut >= 1 && s.BytesOut >= uint64(len(reply))
+	})
+}
+
 func TestUDPRelay_FiresNakOnSustainedGap(t *testing.T) {
 	r, conn := newLoopbackRelay(t)
 	relayAddr := r.ListenAddr()
@@ -135,6 +235,43 @@ func TestUDPRelay_FiresNakOnSustainedGap(t *testing.T) {
 	wait(t, r, 500*time.Millisecond, func(s RelayStats) bool {
 		return s.Naks >= 1
 	})
+}
+
+func TestUDPRelay_SendsNakFrameOnSustainedGap(t *testing.T) {
+	r, conn := newLoopbackRelay(t)
+	relayAddr := r.ListenAddr()
+
+	send(t, conn, relayAddr, bonded.EncodeOptions{
+		SessionID: 0xBEEF,
+		Seq:       0,
+		LinkID:    2,
+		Payload:   []byte{1},
+	})
+	send(t, conn, relayAddr, bonded.EncodeOptions{
+		SessionID: 0xBEEF,
+		Seq:       2,
+		LinkID:    2,
+		Payload:   []byte{3},
+	})
+
+	frame := readFrame(t, conn, 500*time.Millisecond)
+	if !frame.IsNak() {
+		t.Fatalf("expected NAK frame, got flags=0x%02x", frame.Flags)
+	}
+	if frame.SessionID != 0xBEEF {
+		t.Fatalf("wrong session id: got %#x", frame.SessionID)
+	}
+	if frame.LinkID != 2 {
+		t.Fatalf("wrong link id: got %d", frame.LinkID)
+	}
+	if len(frame.Payload) != 16 {
+		t.Fatalf("NAK payload should be 16 bytes, got %d", len(frame.Payload))
+	}
+	start := binary.BigEndian.Uint64(frame.Payload[0:8])
+	end := binary.BigEndian.Uint64(frame.Payload[8:16])
+	if start != 1 || end != 1 {
+		t.Fatalf("wrong NAK range: got %d..%d", start, end)
+	}
 }
 
 func TestUDPRelay_DropsMalformedFrame(t *testing.T) {

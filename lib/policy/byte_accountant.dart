@@ -6,7 +6,7 @@ import 'dart:io';
 /// remote → client (response body). The policy engine doesn't currently care
 /// which direction a byte moved in — speed caps and data caps apply to the
 /// sum — but the directionality is useful for telemetry, future asymmetric
-/// caps, and the streaming-mode scheduler in Phase 10.
+/// caps.
 enum ByteDirection { upstream, downstream }
 
 /// Hook invoked by a transport for every chunk of payload bytes it forwards.
@@ -22,8 +22,9 @@ enum ByteDirection { upstream, downstream }
 /// Returning before the bucket has enough tokens is allowed (the bucket may
 /// be unlimited or the throttler may decide to drop a packet); transports
 /// should still call the hook for every chunk so the meter stays accurate.
-typedef ByteAccountant = Future<void> Function({
-  required InternetAddress localAddress,
-  required int bytes,
-  required ByteDirection direction,
-});
+typedef ByteAccountant =
+    Future<void> Function({
+      required InternetAddress localAddress,
+      required int bytes,
+      required ByteDirection direction,
+    });

@@ -1,10 +1,8 @@
 // Bonded session orchestrator (Swift side).
 //
 // Mirrors `lib/bonded/bonded_session.dart`. Lives inside the system
-// extension and is wired into the `PacketPump` write loop behind a debug
-// flag (`bondedTransport=true` in `policy.json`). Until the Speed Server
-// is reachable (Phase 8), the extension uses this class only via the
-// loopback test rig — the read side never sees real bonded frames.
+// extension and is wired into the `PacketPump` write loop when
+// `bondedTransport=true` in `policy.json`.
 //
 // Per-link sockets are abstracted behind `BondedSendOnLink`: the caller
 // owns the UDP send/recv loops and just forwards bytes here. This keeps
@@ -14,8 +12,8 @@
 import Foundation
 
 /// Callback fired when the orchestrator has a fully-encoded frame ready
-/// to put on a specific link. The caller (Phase 8 will provide a real
-/// `BondedSocketPool`) is responsible for the actual UDP send.
+/// to put on a specific link. `BondedSocketPool` is responsible for the
+/// actual relay send.
 public typealias BondedSendOnLink = (_ linkId: String, _ bytes: Data) -> Void
 
 public typealias BondedDecisionObserver = (BondedSchedulingDecision) -> Void
@@ -65,7 +63,7 @@ public struct BondedClientStats {
     public let retransmissions: Int
     public let keepalives: Int
     /// Number of chunks where the active mode fanned out the same seq
-    /// to multiple links (Redundant always, Streaming on loss).
+    /// to multiple links.
     public let duplicateFanouts: Int
     /// Active bonding mode at snapshot time.
     public let mode: BondedBondingMode

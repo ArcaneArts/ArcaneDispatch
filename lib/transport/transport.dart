@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import '../core/flow_stat.dart';
 import '../core/link_metric.dart';
 import '../core/policy.dart';
 import '../core/proxy_event.dart';
@@ -95,8 +94,8 @@ extension TransportKindCodec on TransportKind {
 ///                        Network Extension (Phase 5+). Until that ships,
 ///                        this implementation reports `failed` immediately.
 ///
-/// The transport owns its own lifecycle and emits four broadcast streams:
-/// [states], [metrics], [flows], and [events]. All four are safe to listen
+/// The transport owns its own lifecycle and emits three broadcast streams:
+/// [states], [metrics], and [events]. All three are safe to listen
 /// to before [start] is called; they survive across start/stop cycles.
 abstract class Transport {
   /// Stable identity used by the UI / settings.
@@ -114,13 +113,8 @@ abstract class Transport {
   /// implementations may emit nothing; Phase 2 wires this up.
   Stream<LinkMetric> get metrics;
 
-  /// Per-flow event stream (open / bytes / close). Phase 1 SOCKS transport
-  /// emits open + close. Phase 6 tunnel transport emits live byte deltas.
-  Stream<FlowStat> get flows;
-
   /// Loose human-readable event stream for the activity log. Mirrors the
-  /// existing [ProxyEvent] shape so the current `_EventsSection` UI keeps
-  /// working unchanged.
+  /// existing [ProxyEvent] shape so warnings and errors stay observable.
   Stream<ProxyEvent> get events;
 
   /// Start the transport. Idempotent: returns immediately if already
@@ -135,12 +129,10 @@ abstract class Transport {
   Future<void> updatePolicy(Policy policy);
 
   /// Per-link bytes carried since the start of each link's current billing
-  /// cycle. Powers the "Total data used" surface in the Activity tab and the
-  /// per-network usage chip on each card.
+  /// cycle. Powers the per-network usage chip on each card.
   ///
   /// Returns an empty map for transports that don't keep their own counters
-  /// (e.g. the macOS Tunnel implementation, which gets fed an aggregate
-  /// number from the extension's flow stats reader on a separate channel).
+  /// (e.g. the macOS Tunnel implementation before it has drained counters).
   /// Counters survive process restarts via the data meter's Hive storage.
   Map<String, int> dataUsedSnapshot() => const <String, int>{};
 

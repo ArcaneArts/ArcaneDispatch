@@ -12,11 +12,8 @@
 
   Policy and server config are passed in via
   NETunnelProviderProtocol.providerConfiguration — see
-  PacketTunnelProvider.swift for the read path. Flow stats (which
-  previously round-tripped through flow_stats.bin in the App Group
-  container) are temporarily unavailable until App Groups is enabled on
-  the developer portal. See macos/Runner/DebugProfile.entitlements for
-  the steps to restore them.
+  PacketTunnelProvider.swift for the read path. See
+  macos/Runner/DebugProfile.entitlements for the App Group setup steps.
 -->
 <plist version="1.0">
 <dict>

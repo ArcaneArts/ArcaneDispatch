@@ -119,18 +119,17 @@ class LocalBondedLoopback {
       opener: serverOpener,
     );
 
-    // Set up scheduler state on both ends from the link specs. We map the
-    // VirtualLinkSpec.loss into the BondedLinkState.lossFraction so the
-    // Streaming strategy can react to it the way it would in the real
-    // network case.
+    // Set up scheduler state on both ends from the link specs.
     List<BondedLinkState> states = links
-        .map((VirtualLinkSpec spec) => BondedLinkState(
-              linkId: spec.linkId,
-              wireId: spec.wireId,
-              bandwidthBps: spec.bandwidthBps,
-              rttMs: spec.latencyMs.toDouble() * 2.0,
-              lossFraction: spec.loss,
-            ))
+        .map(
+          (VirtualLinkSpec spec) => BondedLinkState(
+            linkId: spec.linkId,
+            wireId: spec.wireId,
+            bandwidthBps: spec.bandwidthBps,
+            rttMs: spec.latencyMs.toDouble() * 2.0,
+            lossFraction: spec.loss,
+          ),
+        )
         .toList();
     client.scheduler.updateLinks(states);
     server.scheduler.updateLinks(states);
@@ -142,8 +141,10 @@ class LocalBondedLoopback {
 
   /// Convenience for the test: send N copies of `chunk` and wait for the
   /// server to reassemble them all (or for [timeout] to expire).
-  Future<void> waitForServerBytes(int bytes,
-      {Duration timeout = const Duration(seconds: 5)}) async {
+  Future<void> waitForServerBytes(
+    int bytes, {
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
     DateTime deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
       int received = 0;

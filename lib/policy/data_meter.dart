@@ -34,11 +34,9 @@ class DataMeter {
   final Map<String, _MeterState> _state = <String, _MeterState>{};
   bool _disposed = false;
 
-  DataMeter({
-    required Box storage,
-    DateTime Function() now = _systemNow,
-  })  : _storage = storage,
-        _now = now;
+  DataMeter({required Box storage, DateTime Function() now = _systemNow})
+    : _storage = storage,
+      _now = now;
 
   /// Hot-path counter increment. `linkId` keys into the meter; the counter
   /// is persisted lazily (see [flush]) to keep per-byte overhead negligible.
@@ -89,10 +87,15 @@ class DataMeter {
       if (!s.dirty) {
         return;
       }
-      writes.add(_storage.put(_hiveKeyPrefix + id, jsonEncode(<String, Object>{
-        'used': s.used,
-        'cycleStart': s.cycleStart.toUtc().toIso8601String(),
-      })));
+      writes.add(
+        _storage.put(
+          _hiveKeyPrefix + id,
+          jsonEncode(<String, Object>{
+            'used': s.used,
+            'cycleStart': s.cycleStart.toUtc().toIso8601String(),
+          }),
+        ),
+      );
       s.dirty = false;
     });
     if (writes.isNotEmpty) {
@@ -136,12 +139,10 @@ class DataMeter {
         if (decoded is Map) {
           Object? used = decoded['used'];
           Object? cycle = decoded['cycleStart'];
-          int usedInt = used is int
-              ? used
-              : (used is num ? used.toInt() : 0);
+          int usedInt = used is int ? used : (used is num ? used.toInt() : 0);
           DateTime cycleStart = cycle is String
               ? (DateTime.tryParse(cycle)?.toUtc() ??
-                  _resolveCycleStart(link, now))
+                    _resolveCycleStart(link, now))
               : _resolveCycleStart(link, now);
           return _MeterState(
             used: usedInt >= 0 ? usedInt : 0,
@@ -152,10 +153,7 @@ class DataMeter {
         // Corrupt entry: fall through to a fresh cycle.
       }
     }
-    return _MeterState(
-      used: 0,
-      cycleStart: _resolveCycleStart(link, now),
-    );
+    return _MeterState(used: 0, cycleStart: _resolveCycleStart(link, now));
   }
 
   _MeterState _maybeRollover(Link link, _MeterState state, DateTime now) {
@@ -231,8 +229,5 @@ class _MeterState {
   DateTime cycleStart;
   bool dirty = false;
 
-  _MeterState({
-    required this.used,
-    required this.cycleStart,
-  });
+  _MeterState({required this.used, required this.cycleStart});
 }

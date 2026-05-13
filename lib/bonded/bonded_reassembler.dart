@@ -118,9 +118,9 @@ class BondedReassembler {
     this.windowSize = 4096,
     this.gapTimeout = const Duration(milliseconds: 100),
     this.maxBufferedBytes = 4 * 1024 * 1024, // 4 MiB
-  })  : _nextSeq = initialNextSeq,
-        _outbound = StreamController<Uint8List>.broadcast(),
-        _nakRequests = StreamController<BondedNakRange>.broadcast() {
+  }) : _nextSeq = initialNextSeq,
+       _outbound = StreamController<Uint8List>.broadcast(),
+       _nakRequests = StreamController<BondedNakRange>.broadcast() {
     assert(windowSize > 0);
     assert(maxBufferedBytes > 0);
   }
@@ -249,8 +249,10 @@ class BondedReassembler {
     // _nextSeq and the lowest buffered seq − 1. We only NAK the *first* hole
     // each tick; on the peer's reply we'll discover whether further NAKs
     // are needed.
-    int lowestBuffered = _buffer.keys.fold<int>(0x7fffffffffffffff,
-        (int acc, int seq) => seq < acc ? seq : acc);
+    int lowestBuffered = _buffer.keys.fold<int>(
+      0x7fffffffffffffff,
+      (int acc, int seq) => seq < acc ? seq : acc,
+    );
     int gapEnd = lowestBuffered - 1;
     BondedNakRange range = BondedNakRange(_nextSeq, gapEnd);
     _naks++;
@@ -272,8 +274,10 @@ class BondedReassembler {
 
   void _evictHighest() {
     if (_buffer.isEmpty) return;
-    int highest = _buffer.keys.fold<int>(_nextSeq,
-        (int acc, int seq) => seq > acc ? seq : acc);
+    int highest = _buffer.keys.fold<int>(
+      _nextSeq,
+      (int acc, int seq) => seq > acc ? seq : acc,
+    );
     _buffer.remove(highest);
     _droppedStale++;
   }

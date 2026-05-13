@@ -182,10 +182,9 @@ class NamedInterface {
 ///     before; the service is saved, but `en8` only comes up when the
 ///     iPhone is plugged in.
 ///   * `USB 10/100/1000 LAN` (en10) — a USB-Ethernet adapter the user
-///     has paired with before; the service is saved, but `en10` only
+///     was configured before; the service is saved, but `en10` only
 ///     comes up when the adapter is plugged in.
-///   * `Bluetooth PAN` — surfaces when there's a paired
-///     Bluetooth-tether-capable device.
+///   * `Bluetooth PAN` — surfaces when macOS has a saved tether service.
 ///
 /// Surfacing these lets the user *know* that Dispatch will combine
 /// their iPhone tether the moment they plug it in, instead of having to
@@ -334,8 +333,9 @@ typedef KnownServiceFetcher = Future<List<KnownNetworkService>> Function();
 /// keeps everything in lockstep with reality.
 class NetworkNamingService extends ChangeNotifier {
   /// Channel name. Must mirror the Swift handler.
-  static const MethodChannel _channel =
-      MethodChannel('art.arcane.dispatch/naming');
+  static const MethodChannel _channel = MethodChannel(
+    'art.arcane.dispatch/naming',
+  );
 
   final NamedInterfaceFetcher _fetch;
   final KnownServiceFetcher _fetchServices;
@@ -362,10 +362,10 @@ class NetworkNamingService extends ChangeNotifier {
     KnownServiceFetcher? servicesFetcher,
     Duration refreshInterval = const Duration(seconds: 6),
     bool autoStart = true,
-  })  : _fetch = fetcher ?? _defaultFetcher,
-        _fetchServices = servicesFetcher ?? _defaultServicesFetcher,
-        _refreshInterval = refreshInterval,
-        _autoStart = autoStart;
+  }) : _fetch = fetcher ?? _defaultFetcher,
+       _fetchServices = servicesFetcher ?? _defaultServicesFetcher,
+       _refreshInterval = refreshInterval,
+       _autoStart = autoStart;
 
   /// Read-only snapshot. Returns an empty map until the first refresh
   /// completes. UI must not assume a specific key set is present.
@@ -392,6 +392,7 @@ class NetworkNamingService extends ChangeNotifier {
   /// Becomes a no-op when [autoStart] was set to `false` on construction
   /// (test mode). Callers can still drive the cache manually via
   /// [refresh].
+  ///
   void start() {
     if (_disposed) return;
     if (!_autoStart) return;
@@ -458,7 +459,9 @@ class NetworkNamingService extends ChangeNotifier {
   }
 
   bool _mapEquals(
-      Map<String, NamedInterface> a, Map<String, NamedInterface> b) {
+    Map<String, NamedInterface> a,
+    Map<String, NamedInterface> b,
+  ) {
     if (a.length != b.length) return false;
     for (MapEntry<String, NamedInterface> e in a.entries) {
       NamedInterface? other = b[e.key];
@@ -471,7 +474,9 @@ class NetworkNamingService extends ChangeNotifier {
   }
 
   bool _servicesEquals(
-      List<KnownNetworkService> a, List<KnownNetworkService> b) {
+    List<KnownNetworkService> a,
+    List<KnownNetworkService> b,
+  ) {
     if (a.length != b.length) return false;
     for (int i = 0; i < a.length; i++) {
       KnownNetworkService x = a[i];

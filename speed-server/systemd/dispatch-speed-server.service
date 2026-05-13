@@ -27,12 +27,15 @@ WorkingDirectory=/var/lib/dispatch
 ExecStart=/usr/local/bin/dispatch-speed-server serve \
     -udp :4430 \
     -tcp :4430 \
+    -tun dispatch0 \
+    -server-ip 10.42.0.1 \
+    -client-ip 10.42.0.2 \
     -stats 127.0.0.1:9090 \
     -auth /var/lib/dispatch/auth.json \
-    -key  /var/lib/dispatch/server.key
+    -key  /var/lib/dispatch/server.key \
+    -log-level info
 
-# Network capabilities required for the Phase 11 NAT44 egress. Granted
-# pre-emptively so the unit doesn't need a redeploy when egress lands.
+# Network capabilities required for TUN setup, forwarding, and MASQUERADE.
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
 
@@ -41,11 +44,11 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-PrivateDevices=true
-ProtectKernelTunables=true
+PrivateDevices=false
+ProtectKernelTunables=false
 ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=true
 RestrictRealtime=true
 LockPersonality=true

@@ -80,7 +80,7 @@ if old_target
 end
 
 swift_refs = swift_files.map do |path|
-  # Build the nested group chain so Bonded/, Crypto/, Engine/, QoS/ etc.
+  # Build the nested group chain so Bonded/, Crypto/, Engine/, etc.
   # appear as real folders inside the navigator.
   rel = Pathname.new(path).relative_path_from(Pathname.new(TUNNEL_DIR))
   segments = rel.dirname.to_s == '.' ? [] : rel.dirname.to_s.split(File::SEPARATOR)

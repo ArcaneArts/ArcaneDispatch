@@ -64,8 +64,8 @@ class BondedLinkState {
   /// and decremented by [BondedScheduler.completeSend]).
   final int inflightBytes;
 
-  /// Observed packet-loss fraction, 0.0–1.0. Drives Streaming-mode's
-  /// duplicate-on-loss decision. Strategies treat 0 as "unknown".
+  /// Observed packet-loss fraction, 0.0–1.0. Strategies treat 0 as
+  /// "unknown".
   final double lossFraction;
 
   const BondedLinkState({
@@ -219,8 +219,7 @@ class BondedScheduler {
   /// The scheduler does not block / queue itself.
   ///
   /// [inflightFraction] scales the BDP cap used in the credit formula.
-  /// Speed mode passes 1.0 (default); Streaming mode shrinks the window
-  /// to 0.25 to keep queueing delay minimal. Values outside `[0.05, 1.0]`
+  /// Speed mode passes 1.0 by default. Values outside `[0.05, 1.0]`
   /// are clamped to keep the math sensible.
   BondedSchedulingDecision? pickLink({
     required int bytes,
@@ -303,8 +302,8 @@ class BondedScheduler {
     _states[linkId] = s.copyWith(inflightBytes: next);
   }
 
-  /// Public credit accessor. Strategies (e.g. `LocalStrategy`) consult it
-  /// when they want to consider non-default link populations without
+  /// Public credit accessor. Strategies consult it when they want to
+  /// consider non-default link populations without
   /// invoking the booking side-effect of [pickLink]. Returns 0 when the
   /// link is unknown.
   double creditFor(String linkId, {double inflightFraction = 1.0}) {
@@ -331,7 +330,9 @@ class BondedScheduler {
   // ---------------------------------------------------------------------
 
   double _credit(BondedLinkState s, double frac) {
-    double bandwidth = s.bandwidthBps < minBandwidthBps ? minBandwidthBps : s.bandwidthBps;
+    double bandwidth = s.bandwidthBps < minBandwidthBps
+        ? minBandwidthBps
+        : s.bandwidthBps;
     double rttSec = (s.rttMs < minRttMs ? minRttMs : s.rttMs) / 1000.0;
     // Bandwidth × delay = the BDP "slot" the link can absorb. Subtract
     // inflight to model remaining headroom. Healthier link → more credit.

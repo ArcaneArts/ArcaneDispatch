@@ -29,9 +29,8 @@
 //   bit 0      — ack    (the packet is an ACK; payload may carry a NAK range)
 //   bit 1      — nak    (NAK piggyback in payload)
 //   bit 2      — kalive (keepalive; payload = u64 inflight counter)
-//   bit 3      — rt     (real-time/QoS upgrade — streaming mode)
 //   bit 4      — rtx    (retransmission)
-//   bits 5-7   — reserved (MUST be zero on encode, ignored on decode)
+//   bits 3,5-7 — reserved (MUST be zero on encode, ignored on decode)
 
 import 'dart:typed_data';
 
@@ -63,15 +62,12 @@ class BondedFlags {
   /// Keepalive frame; payload is the sender's `inflight` counter (u64 LE).
   static const int keepalive = 0x04;
 
-  /// Real-time/QoS upgrade flag (streaming mode).
-  static const int realtime = 0x08;
-
   /// This frame is a retransmission of a previously-sent seq.
   static const int retransmit = 0x10;
 
   /// Mask of all defined bits. Used to assert reserved bits are zero on
   /// encode and to mask unknowns on decode.
-  static const int definedMask = 0x1f;
+  static const int definedMask = 0x17;
 }
 
 /// Decoded bonded frame.
@@ -102,7 +98,6 @@ class BondedFrame {
   bool get isAck => (flags & BondedFlags.ack) != 0;
   bool get isNak => (flags & BondedFlags.nak) != 0;
   bool get isKeepalive => (flags & BondedFlags.keepalive) != 0;
-  bool get isRealtime => (flags & BondedFlags.realtime) != 0;
   bool get isRetransmit => (flags & BondedFlags.retransmit) != 0;
 
   @override
@@ -144,11 +139,13 @@ Uint8List encodeBondedFrame({
   Uint8List body = payload ?? Uint8List(0);
   if (body.length > kBondedMaxPayload) {
     throw BondedFramingException(
-        'payload too large (${body.length} > $kBondedMaxPayload)');
+      'payload too large (${body.length} > $kBondedMaxPayload)',
+    );
   }
   if ((flags & ~BondedFlags.definedMask) != 0) {
     throw BondedFramingException(
-        'reserved flag bits set: 0x${flags.toRadixString(16)}');
+      'reserved flag bits set: 0x${flags.toRadixString(16)}',
+    );
   }
   if (linkId < 0 || linkId > 0xffff) {
     throw BondedFramingException('linkId out of range: $linkId');
@@ -186,18 +183,21 @@ Uint8List encodeBondedFrame({
 BondedFrame decodeBondedFrame(Uint8List bytes) {
   if (bytes.length < kBondedHeaderSize) {
     throw BondedFramingException(
-        'short read: ${bytes.length} < $kBondedHeaderSize');
+      'short read: ${bytes.length} < $kBondedHeaderSize',
+    );
   }
   ByteData bd = ByteData.sublistView(bytes);
   int magic = bd.getUint16(0, Endian.big);
   if (magic != kBondedMagic) {
     throw BondedFramingException(
-        'bad magic: 0x${magic.toRadixString(16)} (want 0xDA01)');
+      'bad magic: 0x${magic.toRadixString(16)} (want 0xDA01)',
+    );
   }
   int version = bytes[2];
   if (version > kBondedProtocolVersion) {
     throw BondedFramingException(
-        'unsupported version: $version (max $kBondedProtocolVersion)');
+      'unsupported version: $version (max $kBondedProtocolVersion)',
+    );
   }
   int flags = bytes[3];
   // Mask reserved bits down so callers always see a well-formed bitfield,
@@ -210,17 +210,23 @@ BondedFrame decodeBondedFrame(Uint8List bytes) {
   int payloadLen = bd.getUint16(22, Endian.big);
   if (payloadLen > kBondedMaxPayload) {
     throw BondedFramingException(
-        'payload too large: $payloadLen > $kBondedMaxPayload');
+      'payload too large: $payloadLen > $kBondedMaxPayload',
+    );
   }
   if (kBondedHeaderSize + payloadLen > bytes.length) {
     throw BondedFramingException(
-        'truncated payload: want $payloadLen, have ${bytes.length - kBondedHeaderSize}');
+      'truncated payload: want $payloadLen, have ${bytes.length - kBondedHeaderSize}',
+    );
   }
   // Slice (zero-copy view) over the payload. If the caller wants ownership
   // they call `Uint8List.fromList(frame.payload)` themselves.
   Uint8List payload = payloadLen == 0
       ? Uint8List(0)
-      : Uint8List.sublistView(bytes, kBondedHeaderSize, kBondedHeaderSize + payloadLen);
+      : Uint8List.sublistView(
+          bytes,
+          kBondedHeaderSize,
+          kBondedHeaderSize + payloadLen,
+        );
   return BondedFrame(
     magic: magic,
     version: version,

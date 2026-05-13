@@ -1,8 +1,6 @@
 import 'dart:async';
 
-import '../bridge/flow_stats_reader.dart';
 import '../bridge/tunnel_channel.dart';
-import '../core/flow_stat.dart';
 import '../core/link_metric.dart';
 import '../core/policy.dart';
 import '../core/proxy_event.dart';
@@ -16,20 +14,12 @@ import 'transport.dart';
 /// 1. Drive the platform lifecycle (install extension, start/stop VPN).
 /// 2. Push the active [Policy] into the App Group container as JSON so the
 ///    extension reads the same snapshot the Dart UI shows.
-/// 3. Surface status + (in later phases) flow/metric streams back to the
+/// 3. Surface status + metric streams back to the
 ///    [DispatchController] via the standard [Transport] streams.
-///
-/// In Phase 5 the metric/flow streams stay quiet; Phase 6 fills them with
-/// live data from a shared-memory mailbox in the App Group container.
 class TunnelTransport implements Transport {
   /// Bridge to the Swift `TunnelManager`. Injected so tests can swap in a
   /// `FakeTunnelChannel` without spinning up a real MethodChannel.
   final TunnelChannel channel;
-
-  /// Reads the App Group ring buffer the extension writes to. Each record
-  /// becomes one `FlowStat` event on [flows]. Injected so tests can plug a
-  /// fake reader and replay canned events without a real tunnel.
-  final FlowStatsReader flowStatsReader;
 
   /// How often to poll [TunnelChannel.status] when the tunnel is running.
   /// 1 s is fast enough for the UI to show a "stopping" transition without
@@ -46,7 +36,6 @@ class TunnelTransport implements Transport {
   );
   final StreamController<LinkMetric> _metrics =
       StreamController<LinkMetric>.broadcast();
-  final StreamController<FlowStat> _flows = StreamController<FlowStat>.broadcast();
   final StreamController<ProxyEvent> _events =
       StreamController<ProxyEvent>.broadcast();
 
@@ -54,7 +43,6 @@ class TunnelTransport implements Transport {
   Timer? _throughputTimer;
   TunnelStatus _lastStatus = TunnelStatus.unknown();
   bool _disposed = false;
-  StreamSubscription<FlowStat>? _flowSub;
 
   /// Cumulative bytes per link since [start]. Returned verbatim by
   /// [dataUsedSnapshot] so the UI's "Total used this cycle" reading
@@ -65,11 +53,9 @@ class TunnelTransport implements Transport {
 
   TunnelTransport({
     TunnelChannel? channel,
-    FlowStatsReader? flowStatsReader,
     this.statusPollInterval = const Duration(seconds: 1),
     this.throughputPollInterval = const Duration(seconds: 1),
-  })  : channel = channel ?? TunnelChannel(),
-        flowStatsReader = flowStatsReader ?? FlowStatsReader(channel: channel);
+  }) : channel = channel ?? TunnelChannel();
 
   @override
   TransportKind get kind {
@@ -92,11 +78,6 @@ class TunnelTransport implements Transport {
   }
 
   @override
-  Stream<FlowStat> get flows {
-    return _flows.stream;
-  }
-
-  @override
   Stream<ProxyEvent> get events {
     return _events.stream;
   }
@@ -110,10 +91,12 @@ class TunnelTransport implements Transport {
       throw StateError('TunnelTransport has been disposed.');
     }
     _state.add(TransportStatus(state: TransportState.starting));
-    _events.add(ProxyEvent(
-      type: ProxyEventType.info,
-      message: 'Starting system-wide tunnel…',
-    ));
+    _events.add(
+      ProxyEvent(
+        type: ProxyEventType.info,
+        message: 'Starting system-wide tunnel…',
+      ),
+    );
 
     try {
       // 1. Make sure the System Extension is installed. If it's pending user
@@ -123,8 +106,8 @@ class TunnelTransport implements Transport {
       if (!install.activated) {
         String msg = install.pending
             ? 'Network Extension is pending user approval. '
-                'Open System Settings → Privacy & Security and click Allow, '
-                'then start again.'
+                  'Open System Settings → Privacy & Security and click Allow, '
+                  'then start again.'
             : 'Failed to activate Network Extension: ${install.errorMessage ?? 'unknown error'}';
         _events.add(ProxyEvent(type: ProxyEventType.warning, message: msg));
         _state.add(
@@ -137,10 +120,12 @@ class TunnelTransport implements Transport {
       //    atomically before calling startVPNTunnel, so the extension reads
       //    the latest snapshot on its very first `readPolicy`.
       await channel.startTunnel(policy: policy);
-      _events.add(ProxyEvent(
-        type: ProxyEventType.info,
-        message: 'Tunnel start requested. Awaiting connection…',
-      ));
+      _events.add(
+        ProxyEvent(
+          type: ProxyEventType.info,
+          message: 'Tunnel start requested. Awaiting connection…',
+        ),
+      );
 
       // 3. Poll status until the kernel reports connected or failed. The
       //    polling timer keeps running while the tunnel is up so we catch
@@ -152,12 +137,6 @@ class TunnelTransport implements Transport {
       //    valid as soon as packets start flowing — there's no harm in
       //    polling early and getting zeros.
       _scheduleThroughputPolling();
-
-      // 5. Spin up the flow-stats reader so the UI gets live per-connection
-      //    rows as the extension publishes them. Safe to start even when
-      //    the file doesn't exist yet — the reader will pick it up on the
-      //    next poll once the extension creates it.
-      await _attachFlowReader();
     } on TunnelUnavailableException {
       const String msg =
           'System-wide tunnel is only available on macOS with the '
@@ -185,23 +164,23 @@ class TunnelTransport implements Transport {
     _totalIn.clear();
     _totalOut.clear();
     _lastDrainAt = null;
-    await _detachFlowReader();
     _state.add(TransportStatus(state: TransportState.stopping));
     try {
       await channel.stopTunnel();
     } on TunnelUnavailableException {
       // Nothing to stop — bridge isn't even loaded on this host.
     } catch (e) {
-      _events.add(ProxyEvent(
-        type: ProxyEventType.warning,
-        message: 'Tunnel stop returned an error: $e',
-      ));
+      _events.add(
+        ProxyEvent(
+          type: ProxyEventType.warning,
+          message: 'Tunnel stop returned an error: $e',
+        ),
+      );
     }
     _state.add(TransportStatus(state: TransportState.stopped));
-    _events.add(ProxyEvent(
-      type: ProxyEventType.info,
-      message: 'Tunnel stopped.',
-    ));
+    _events.add(
+      ProxyEvent(type: ProxyEventType.info, message: 'Tunnel stopped.'),
+    );
   }
 
   /// Push a new [Policy] to the extension. Cheap when the tunnel isn't
@@ -221,10 +200,12 @@ class TunnelTransport implements Transport {
     } on TunnelUnavailableException {
       // Bridge unavailable — nothing to do.
     } catch (e) {
-      _events.add(ProxyEvent(
-        type: ProxyEventType.warning,
-        message: 'Policy push failed: $e',
-      ));
+      _events.add(
+        ProxyEvent(
+          type: ProxyEventType.warning,
+          message: 'Policy push failed: $e',
+        ),
+      );
     }
   }
 
@@ -251,42 +232,12 @@ class TunnelTransport implements Transport {
     _statusTimer = null;
     _throughputTimer?.cancel();
     _throughputTimer = null;
-    await _detachFlowReader();
-    // Tear the reader itself down so its file handle releases even if it
-    // was never started (production callers always own one whether or not
-    // they ever called start()).
-    await flowStatsReader.dispose();
     await _state.close();
     await _metrics.close();
-    await _flows.close();
     await _events.close();
   }
 
   // --- internals -----------------------------------------------------------
-
-  /// Subscribe to the flow-stats stream, forwarding each event to our public
-  /// [flows] sink. Idempotent: a second call replaces the previous
-  /// subscription without leaking it.
-  Future<void> _attachFlowReader() async {
-    await _detachFlowReader();
-    _flowSub = flowStatsReader.flows.listen(_flows.add);
-    try {
-      await flowStatsReader.start();
-    } catch (e) {
-      // Reader failed to open — not fatal, the tunnel still works without
-      // the live flow panel. Surface as a one-shot warning.
-      _events.add(ProxyEvent(
-        type: ProxyEventType.warning,
-        message: 'Flow inspector unavailable: $e',
-      ));
-    }
-  }
-
-  Future<void> _detachFlowReader() async {
-    await _flowSub?.cancel();
-    _flowSub = null;
-    await flowStatsReader.stop();
-  }
 
   /// Start (or reset) the status-poll timer. Mapping
   /// `TunnelStatusKind -> TransportState` happens in [_publishStatus]
@@ -309,10 +260,12 @@ class TunnelTransport implements Transport {
       _publishStatus(next);
     } on TunnelUnavailableException {
       // Channel went away — fall back to stopped to avoid a stuck UI.
-      _publishStatus(TunnelStatus(
-        kind: TunnelStatusKind.stopped,
-        extensionBundleId: _lastStatus.extensionBundleId,
-      ));
+      _publishStatus(
+        TunnelStatus(
+          kind: TunnelStatusKind.stopped,
+          extensionBundleId: _lastStatus.extensionBundleId,
+        ),
+      );
     } catch (_) {
       // Swallow — the next tick retries. Reporting every transient hiccup
       // to the user would be noisy.
@@ -358,42 +311,46 @@ class TunnelTransport implements Transport {
     // the timer is wildly off) and against jittery wall clocks.
     double seconds = since.inMicroseconds / Duration.microsecondsPerSecond;
     if (seconds < 0.05) {
-      seconds = throughputPollInterval.inMicroseconds /
+      seconds =
+          throughputPollInterval.inMicroseconds /
           Duration.microsecondsPerSecond;
     }
     for (TunnelThroughputSample sample in samples) {
       double bpsIn = sample.bytesIn / seconds;
       double bpsOut = sample.bytesOut / seconds;
-      _totalIn[sample.linkId] =
-          (_totalIn[sample.linkId] ?? 0) + sample.bytesIn;
+      _totalIn[sample.linkId] = (_totalIn[sample.linkId] ?? 0) + sample.bytesIn;
       _totalOut[sample.linkId] =
           (_totalOut[sample.linkId] ?? 0) + sample.bytesOut;
-      _metrics.add(LinkMetric(
-        linkId: sample.linkId,
-        rttMs: 0,
-        loss: 0,
-        bpsIn: bpsIn,
-        bpsOut: bpsOut,
-        capturedAt: now,
-      ));
+      _metrics.add(
+        LinkMetric(
+          linkId: sample.linkId,
+          rttMs: 0,
+          loss: 0,
+          bpsIn: bpsIn,
+          bpsOut: bpsOut,
+          capturedAt: now,
+        ),
+      );
     }
   }
 
   void _publishStatus(TunnelStatus next) {
-    if (next.kind == _lastStatus.kind && next.lastError == _lastStatus.lastError) {
+    if (next.kind == _lastStatus.kind &&
+        next.lastError == _lastStatus.lastError) {
       return;
     }
     _lastStatus = next;
     switch (next.kind) {
       case TunnelStatusKind.connected:
-        _state.add(TransportStatus(
-          state: TransportState.running,
-          endpoint: next.extensionBundleId,
-        ));
-        _events.add(ProxyEvent(
-          type: ProxyEventType.info,
-          message: 'Tunnel connected.',
-        ));
+        _state.add(
+          TransportStatus(
+            state: TransportState.running,
+            endpoint: next.extensionBundleId,
+          ),
+        );
+        _events.add(
+          ProxyEvent(type: ProxyEventType.info, message: 'Tunnel connected.'),
+        );
         break;
       case TunnelStatusKind.starting:
         _state.add(TransportStatus(state: TransportState.starting));
@@ -409,23 +366,29 @@ class TunnelTransport implements Transport {
       case TunnelStatusKind.failed:
         _statusTimer?.cancel();
         _statusTimer = null;
-        _state.add(TransportStatus(
-          state: TransportState.failed,
-          errorMessage: next.lastError,
-        ));
-        _events.add(ProxyEvent(
-          type: ProxyEventType.error,
-          message: next.lastError ?? 'Tunnel failed.',
-        ));
+        _state.add(
+          TransportStatus(
+            state: TransportState.failed,
+            errorMessage: next.lastError,
+          ),
+        );
+        _events.add(
+          ProxyEvent(
+            type: ProxyEventType.error,
+            message: next.lastError ?? 'Tunnel failed.',
+          ),
+        );
         break;
       case TunnelStatusKind.extensionMissing:
         _statusTimer?.cancel();
         _statusTimer = null;
-        _state.add(TransportStatus(
-          state: TransportState.failed,
-          errorMessage:
-              'Network Extension is not installed. Click Start to install.',
-        ));
+        _state.add(
+          TransportStatus(
+            state: TransportState.failed,
+            errorMessage:
+                'Network Extension is not installed. Click Start to install.',
+          ),
+        );
         break;
       case TunnelStatusKind.unknown:
         // Don't churn the state machine on first-poll uncertainty.

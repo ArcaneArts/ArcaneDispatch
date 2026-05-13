@@ -33,7 +33,7 @@ class ReplayWindow {
   late final List<int> _bitmap; // each int covers 64 bits
 
   ReplayWindow({int size = defaultReplayWindow})
-      : size = size > 0 ? size : defaultReplayWindow {
+    : size = size > 0 ? size : defaultReplayWindow {
     int words = (this.size + 63) ~/ 64;
     _bitmap = List<int>.filled(words, 0);
   }
@@ -89,8 +89,9 @@ class ReplayWindow {
     if (smallShift > 0) {
       int carry = 0;
       for (int i = 0; i < _bitmap.length; i++) {
-        int newCarry =
-            (smallShift == 0) ? 0 : (_bitmap[i] >>> (64 - smallShift));
+        int newCarry = (smallShift == 0)
+            ? 0
+            : (_bitmap[i] >>> (64 - smallShift));
         _bitmap[i] = ((_bitmap[i] << smallShift) | carry) & _u64Mask;
         carry = newCarry;
       }

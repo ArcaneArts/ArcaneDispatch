@@ -14,18 +14,13 @@
     },
     "mode": {
       "type": "string",
-      "enum": ["speed", "redundant", "streaming", "local"],
-      "description": "Active bonding mode. Maps to BondingMode in Dart and the scheduler choice in the extension. `local` keeps traffic inside the device (no Speed Server)."
+      "enum": ["speed", "redundant"],
+      "description": "Active bonding mode. Maps to BondingMode in Dart and the scheduler choice in the extension."
     },
     "killSwitch": {
       "type": "boolean",
       "default": false,
       "description": "When true, the transport blocks egress whenever the supervisor reports no healthy link. The extension MUST drop packets rather than fall through to the kernel's default route."
-    },
-    "streamingDetection": {
-      "type": "boolean",
-      "default": true,
-      "description": "When true, the streaming detector tags real-time flows (Zoom/WebRTC/SNI allow-list) and the scheduler upgrades them to the RT queue."
     },
     "dnsServers": {
       "type": "array",
@@ -42,7 +37,7 @@
     "serverUrl": {
       "type": ["string", "null"],
       "format": "uri",
-      "description": "Speed Server URL (e.g. udp://relay.example.com:443). Null puts the transport in local-only mode."
+      "description": "Relay URL (e.g. udp://relay.example.com:4430). Null means no relay is configured yet."
     },
     "serverToken": {
       "type": ["string", "null"],
@@ -51,12 +46,12 @@
     "bondedTransport": {
       "type": "boolean",
       "default": false,
-      "description": "Debug flag (Phase 7). When true the macOS Network Extension also drives the BondedClient encoder for every outbound packet so we can log-inspect bonded frames before the Speed Server (Phase 8) is reachable. Defaults to false; production builds keep it off."
+      "description": "When true, the macOS Network Extension sends packet flow through the relay-backed bonded transport."
     },
     "captivePortalAssist": {
       "type": "boolean",
-      "default": false,
-      "description": "Phase 14. When true, the container app's CaptivePortalDetector runs per-link probes against http://captive.apple.com/ and demotes captive links to Backup until they pass. The extension itself doesn't probe — it only reacts to the priorities Dart pushes into policy.json. Defaults to false."
+      "default": true,
+      "description": "When true, the container app's CaptivePortalDetector runs per-link probes against http://captive.apple.com/ and demotes captive links to Backup until they pass. The extension itself doesn't probe — it only reacts to the priorities Dart pushes into policy.json."
     },
     "links": {
       "type": "array",
@@ -73,7 +68,7 @@
         "id": {
           "type": "string",
           "minLength": 1,
-          "description": "Stable identifier (typically `legacy:<token>` or a generated UUID). Used as the join key for metrics, flows, and the App Group shared state. MUST be unique across links."
+          "description": "Stable identifier (typically `legacy:<token>` or a generated UUID). Used as the join key for metrics and the App Group shared state. MUST be unique across links."
         },
         "label": {
           "type": "string",
@@ -85,7 +80,7 @@
         },
         "sourceAddress": {
           "type": ["string", "null"],
-          "description": "Literal source IP or CIDR override. Free-form because we need both v4 and v6, plus eventual virtual links (Pair & Share)."
+          "description": "Literal source IP or CIDR override. Free-form because we need both v4 and v6."
         },
         "priority": {
           "type": "string",

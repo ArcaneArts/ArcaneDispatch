@@ -6,22 +6,17 @@ import 'package:hive/hive.dart';
 
 import '../core/bonding_mode.dart';
 import '../core/dispatch_settings.dart';
-import '../core/flow_stat.dart';
 import '../core/link.dart';
 import '../core/link_metric.dart';
 import '../core/network_interface_repository.dart';
 import '../core/policy.dart';
 import '../core/proxy_event.dart';
-import '../crypto/noise.dart';
-import '../paired/pair_coordinator.dart';
-import '../paired/paired_channel.dart';
 import '../platform/network_naming_service.dart';
 import '../platform/startup_service.dart';
 import '../policy/link_supervisor.dart';
 import '../probes/captive_portal_probe.dart';
 import '../probes/link_metric_store.dart';
 import '../probes/link_probe_service.dart';
-import '../protocol/protocol_ladder.dart';
 import '../transport/socks_transport.dart';
 import '../transport/transport.dart';
 import '../transport/tunnel_transport.dart';
@@ -33,10 +28,8 @@ import '../transport/tunnel_transport.dart';
 /// configuration (listen host/port for SOCKS, etc.). The factory must always
 /// return a transport whose [Transport.kind] equals [kind] — otherwise the
 /// controller and the persisted settings will desync.
-typedef TransportFactory = Transport Function(
-  TransportKind kind,
-  DispatchSettings settings,
-);
+typedef TransportFactory =
+    Transport Function(TransportKind kind, DispatchSettings settings);
 
 /// Controller that owns the active [Transport], the persisted
 /// [DispatchSettings], and the live runtime view-model the UI subscribes to.
@@ -47,7 +40,7 @@ typedef TransportFactory = Transport Function(
 ///
 /// The controller keeps the legacy "set listen host / port / selected
 /// targets" API so the existing `home_screen` keeps working unchanged, then
-/// layers new accessors (`linkMetrics`, `flows`, `transportKind`,
+/// layers new accessors (`linkMetrics`, `transportKind`,
 /// `setLinks`, `setPolicy`, `setTransportKind`) for the upcoming dashboard.
 class DispatchController extends ChangeNotifier {
   final NetworkInterfaceRepository repository;
@@ -82,15 +75,6 @@ class DispatchController extends ChangeNotifier {
   /// `null` until the first probe tick lands.
   LinkHealthEvent? lastHealthEvent;
 
-  /// Sliding window of recent flows for the inspector. Newest first; capped
-  /// at 64 entries to keep the activity panel snappy on cold boot.
-  List<FlowStat> flows = <FlowStat>[];
-
-  /// Active protocol per link, populated by the negotiation loop or by a
-  /// manual UI override. Empty until the first negotiation completes;
-  /// transient — the choice gets refreshed every session start.
-  Map<String, LinkProtocol> linkProtocols = <String, LinkProtocol>{};
-
   /// Latest captive-portal verdict per link id. Populated by the per-link
   /// [CaptivePortalDetector] when `policy.captivePortalAssist` is on.
   /// Keys without an entry are treated as "unknown" — the UI shows a
@@ -115,21 +99,13 @@ class DispatchController extends ChangeNotifier {
   /// Subscription handles so we can cancel cleanly on detector teardown
   /// without losing the in-flight state for other links.
   final Map<String, StreamSubscription<CaptivePortalState>>
-      _captiveSubscriptions =
-      <String, StreamSubscription<CaptivePortalState>>{};
-
-  /// Pair & Share coordinator. Lazy: callers that touch [pairCoordinator]
-  /// trigger discovery wiring; the widget-test path that never opens the
-  /// Pair tab leaves this null so no MethodChannel / Bonjour timers leak.
-  PairCoordinator? _pairCoordinator;
-  final PairCoordinator? Function()? _pairCoordinatorFactory;
+  _captiveSubscriptions = <String, StreamSubscription<CaptivePortalState>>{};
 
   bool loadingInterfaces = false;
   String? errorText;
 
   StreamSubscription<TransportStatus>? _statusSubscription;
   StreamSubscription<ProxyEvent>? _eventSubscription;
-  StreamSubscription<FlowStat>? _flowSubscription;
   StreamSubscription<LinkMetric>? _metricSubscription;
   StreamSubscription<LinkMetric>? _probeMetricSubscription;
   StreamSubscription<LinkHealthEvent>? _supervisorSubscription;
@@ -151,12 +127,10 @@ class DispatchController extends ChangeNotifier {
     required this.namingService,
     required Uri captiveTarget,
     required CaptivePortalProbeFn captiveProbe,
-    PairCoordinator? Function()? pairCoordinatorFactory,
-  })  : _transportFactory = transportFactory,
-        _transport = transport,
-        _captiveTarget = captiveTarget,
-        _captiveProbe = captiveProbe,
-        _pairCoordinatorFactory = pairCoordinatorFactory {
+  }) : _transportFactory = transportFactory,
+       _transport = transport,
+       _captiveTarget = captiveTarget,
+       _captiveProbe = captiveProbe {
     _wireTransport();
     _wireProbes();
     _wireSupervisor();
@@ -181,7 +155,6 @@ class DispatchController extends ChangeNotifier {
     NetworkNamingService? namingService,
     Uri? captiveTarget,
     CaptivePortalProbeFn? captiveProbe,
-    PairCoordinator? Function()? pairCoordinatorFactory,
   }) {
     TransportFactory factory =
         transportFactory ?? _defaultTransportFactory(repository, settingsBox);
@@ -204,8 +177,6 @@ class DispatchController extends ChangeNotifier {
       namingService: naming,
       captiveTarget: captiveTarget ?? appleCaptiveProbeUri,
       captiveProbe: captiveProbe ?? httpCaptivePortalProbe,
-      pairCoordinatorFactory:
-          pairCoordinatorFactory ?? () => _defaultPairCoordinator(settingsBox),
     );
   }
 
@@ -228,35 +199,6 @@ class DispatchController extends ChangeNotifier {
         '${settings.listenHost}:${settings.listenPort}';
   }
 
-  /// Lazy accessor for the Pair & Share coordinator. The first read
-  /// builds the coordinator (which spins up the discovery surface);
-  /// callers that never open the Pair tab pay nothing. Returns `null`
-  /// when the construction factory chose to skip (e.g. on platforms
-  /// without a Bonjour bridge in a test harness).
-  PairCoordinator? get pairCoordinator {
-    if (_pairCoordinator != null) return _pairCoordinator;
-    PairCoordinator? Function()? factory = _pairCoordinatorFactory;
-    if (factory == null) return null;
-    _pairCoordinator = factory();
-    // Forward notifications so listeners of [DispatchController] (the
-    // home screen) repaint when pairing state changes without having
-    // to subscribe to the coordinator separately.
-    _pairCoordinator?.addListener(notifyListeners);
-    return _pairCoordinator;
-  }
-
-  /// Convenience wrapper that approves the pending handshake and
-  /// merges the resulting paired peer into the policy. UI calls this
-  /// from the "Confirm pairing" modal's primary button.
-  Future<void> approvePendingPairing() async {
-    PairCoordinator? p = pairCoordinator;
-    if (p == null) return;
-    Link? link = await p.approvePendingHandshake();
-    if (link != null) {
-      await attachPairedLink(link);
-    }
-  }
-
   Future<void> initialize() async {
     // Re-hydrate the latest metric snapshot from the previous run so the UI
     // has something to render before the first probe tick lands.
@@ -276,8 +218,74 @@ class DispatchController extends ChangeNotifier {
     await refreshInterfaces();
     probeService.updateLinks(settings.links);
     if (settings.startProxyOnLaunch && settings.links.isNotEmpty) {
-      await startProxy();
+      // SAFETY: Don't blindly auto-start. The tunnel grabs the system
+      // default route the instant it comes up — if the forwarder has no
+      // healthy link to forward through, the user loses internet until
+      // they quit the app. Defer the start until we've confirmed at
+      // least one adopted link is currently reachable.
+      unawaited(_autoStartIfHealthy());
     }
+  }
+
+  /// Wait briefly for the captive probes / link supervisor to publish at
+  /// least one healthy link, then start the proxy. If no link is healthy
+  /// within the window, skip auto-start and surface a clear event so the
+  /// user knows why their VPN isn't on.
+  ///
+  /// "Healthy" here means: captive probe says `clear` (or hasn't reported
+  /// yet *and* the link's interface is currently up). We're permissive
+  /// about "not yet probed" because the very first launch on a healthy
+  /// Wi-Fi will start the auto-start clock before the captive probe gets
+  /// its first 200 OK back — and we don't want to make the user wait an
+  /// extra probe cycle for the common case.
+  Future<void> _autoStartIfHealthy() async {
+    // Total budget. After this we give up and let the user click power.
+    const Duration window = Duration(seconds: 6);
+    // Poll cadence. The captive detector typically fires its first probe
+    // within ~1s of startup.
+    const Duration tick = Duration(milliseconds: 250);
+    DateTime deadline = DateTime.now().add(window);
+    while (DateTime.now().isBefore(deadline)) {
+      if (_anyLinkUsable()) {
+        await startProxy();
+        return;
+      }
+      // Stop polling if the user has hit power themselves in the meantime
+      // (very unlikely in the first 6 seconds but worth honoring).
+      if (isRunning) return;
+      await Future<void>.delayed(tick);
+    }
+    addEvent(
+      ProxyEvent(
+        type: ProxyEventType.warning,
+        message:
+            'Skipped auto-start — no network with internet access yet. Tap the power button when you\'re ready.',
+      ),
+    );
+  }
+
+  /// True iff at least one currently-adopted (`primary` / `secondary` /
+  /// `backup`) link is in a state where forwarding would actually work.
+  /// Considers the live interface snapshot and any captive probe result.
+  bool _anyLinkUsable() {
+    for (Link link in settings.policy.links) {
+      if (link.priority == LinkPriority.never) continue;
+      String? bsd = link.interfaceName?.toLowerCase();
+      if (bsd == null || bsd.isEmpty) {
+        continue;
+      }
+      bool isUp = interfaces.any((NetworkInterfaceSnapshot iface) {
+        return iface.name.toLowerCase() == bsd;
+      });
+      if (!isUp) continue;
+      CaptivePortalProbeResult? captive = captiveStates[link.id];
+      if (captive == CaptivePortalProbeResult.error ||
+          captive == CaptivePortalProbeResult.captive) {
+        continue;
+      }
+      return true;
+    }
+    return false;
   }
 
   Future<void> refreshInterfaces() async {
@@ -344,10 +352,8 @@ class DispatchController extends ChangeNotifier {
     if (interfaces.isEmpty) return;
 
     // Build the set of BSD names already owned by some existing link.
-    // Paired links don't have a BSD anchor; skip them.
     Set<String> claimedBsd = <String>{};
     for (Link link in settings.links) {
-      if (link.kind == LinkKind.paired) continue;
       String? iface = link.interfaceName;
       if (iface != null && iface.isNotEmpty) {
         claimedBsd.add(iface.toLowerCase());
@@ -397,14 +403,15 @@ class DispatchController extends ChangeNotifier {
       // interface currently has, which survives DHCP rebinds without
       // us having to rewrite the link.
       String id = 'auto:$bsd';
-      next.add(Link(
-        id: id,
-        label: '',
-        interfaceName: snap.name,
-        sourceAddress: null,
-        priority: LinkPriority.primary,
-        kind: LinkKind.local,
-      ));
+      next.add(
+        Link(
+          id: id,
+          label: '',
+          interfaceName: snap.name,
+          sourceAddress: null,
+          priority: LinkPriority.primary,
+        ),
+      );
       claimedBsd.add(bsd);
       changed = true;
     }
@@ -431,9 +438,7 @@ class DispatchController extends ChangeNotifier {
     for (InternetAddress addr in snap.validAddresses) {
       if (addr.type == InternetAddressType.IPv4) return addr;
     }
-    return snap.validAddresses.isNotEmpty
-        ? snap.validAddresses.first
-        : null;
+    return snap.validAddresses.isNotEmpty ? snap.validAddresses.first : null;
   }
 
   Future<void> setListenHost(String host) async {
@@ -527,7 +532,10 @@ class DispatchController extends ChangeNotifier {
   ///
   /// [megabitsPerSec] is in user-facing Mbps; we convert to bytes/sec
   /// internally so the same units land in `Link.speedCapBps`.
-  Future<void> setLinkSpeedCapMbps(String linkId, double? megabitsPerSec) async {
+  Future<void> setLinkSpeedCapMbps(
+    String linkId,
+    double? megabitsPerSec,
+  ) async {
     int? bps;
     if (megabitsPerSec != null && megabitsPerSec > 0) {
       // 1 Mbit = 125_000 bytes/sec.
@@ -599,93 +607,41 @@ class DispatchController extends ChangeNotifier {
     await setPolicy(settings.policy.copyWith(killSwitch: value));
   }
 
-  /// Focused setter for the active bonding mode (Speed / Redundant /
-  /// Streaming / Local). Equivalent to
+  Future<void> setRelayEndpoint(String value) async {
+    String trimmed = value.trim();
+    String? next = trimmed.isEmpty ? null : trimmed;
+    if (settings.policy.serverUrl == next) {
+      return;
+    }
+    await setPolicy(
+      settings.policy.copyWith(serverUrl: next, bondedTransport: next != null),
+    );
+  }
+
+  Future<void> setRelayToken(String value) async {
+    String trimmed = value.trim();
+    String? next = trimmed.isEmpty ? null : trimmed;
+    if (settings.policy.serverToken == next) {
+      return;
+    }
+    await setPolicy(settings.policy.copyWith(serverToken: next));
+  }
+
+  Future<void> useDefaultRelay() => setPolicy(
+    settings.policy.copyWith(
+      serverUrl: DispatchSettings.defaultRelayUrl,
+      serverToken: DispatchSettings.defaultRelayToken,
+      bondedTransport: true,
+    ),
+  );
+
+  /// Focused setter for the active bonding mode. Equivalent to
   /// `setPolicy(policy.copyWith(mode: value))` but typed for the UI.
-  ///
-  /// The transport's underlying `BondedSession` (when wired) honors mode
-  /// changes mid-stream without dropping in-flight frames — see
-  /// `BondedSession.setMode` and the Phase 10 loopback test
-  /// `setMode at runtime swaps strategies without dropping the stream`.
   Future<void> setBondingMode(BondingMode value) async {
     if (settings.policy.mode == value) {
       return;
     }
     await setPolicy(settings.policy.copyWith(mode: value));
-  }
-
-  /// Toggle the streaming/QoS prioritization. When enabled, the tunnel's
-  /// classifier tags Zoom/WebRTC/SNI-matched flows and the bonded session
-  /// routes them through its real-time lane. When disabled all flows ride
-  /// the bulk scheduler regardless of port/SNI.
-  ///
-  /// The toggle is part of `policy.streamingDetection` so the extension
-  /// (which actually does the classifying) sees the change as soon as the
-  /// next policy.json write lands.
-  Future<void> setStreamingDetection(bool value) async {
-    if (settings.policy.streamingDetection == value) {
-      return;
-    }
-    await setPolicy(settings.policy.copyWith(streamingDetection: value));
-  }
-
-  /// Manual per-link protocol override. Used by the Phase 11 chip UI to
-  /// pin a link to UDP / TCP / TLS regardless of the auto-ladder's
-  /// current verdict. Passing `null` clears the override and falls back
-  /// to whatever the negotiation loop last picked.
-  ///
-  /// The state is transient (not persisted) because operational
-  /// conditions change frequently — pinning a link forever would defeat
-  /// the auto-failover machinery. The UI surfaces this via a chip on
-  /// each link card.
-  void setLinkProtocol(String linkId, LinkProtocol? protocol) {
-    if (protocol == null) {
-      if (!linkProtocols.containsKey(linkId)) return;
-      linkProtocols = <String, LinkProtocol>{...linkProtocols}
-        ..remove(linkId);
-    } else {
-      if (linkProtocols[linkId] == protocol) return;
-      linkProtocols = <String, LinkProtocol>{
-        ...linkProtocols,
-        linkId: protocol,
-      };
-    }
-    notifyListeners();
-  }
-
-  /// Merge a freshly-paired peer into the policy as a [LinkKind.paired]
-  /// link. Idempotent — calling twice with the same link replaces the
-  /// prior entry rather than duplicating it.
-  Future<void> attachPairedLink(Link link) async {
-    if (link.kind != LinkKind.paired) {
-      throw ArgumentError('attachPairedLink requires LinkKind.paired');
-    }
-    List<Link> next = <Link>[];
-    bool replaced = false;
-    for (Link existing in settings.policy.links) {
-      if (existing.id == link.id) {
-        next.add(link);
-        replaced = true;
-      } else {
-        next.add(existing);
-      }
-    }
-    if (!replaced) {
-      next.add(link);
-    }
-    await setLinks(next);
-  }
-
-  /// Remove a previously-paired peer. No-op if the linkId is not paired
-  /// or doesn't exist.
-  Future<void> detachPairedLink(String linkId) async {
-    List<Link> next = settings.policy.links
-        .where((Link l) => !(l.id == linkId && l.kind == LinkKind.paired))
-        .toList(growable: false);
-    if (next.length == settings.policy.links.length) {
-      return;
-    }
-    await setLinks(next);
   }
 
   /// Toggle the captive-portal assist subsystem. When enabled, each link
@@ -700,19 +656,47 @@ class DispatchController extends ChangeNotifier {
     _reconcileCaptiveDetectors();
   }
 
-  /// Returns the policy with captive links forcibly downgraded to
+  /// Returns the policy with captive-OR-broken links forcibly downgraded to
   /// `LinkPriority.backup`. Used wherever the controller pushes a policy to
   /// a downstream component (supervisor, transport). The on-disk policy is
   /// never rewritten — demotions only affect runtime routing.
+  ///
+  /// "Broken" here = `CaptivePortalProbeResult.error` — we tried to hit
+  /// the open internet and couldn't get a real response. This is the
+  /// Speedify-style "link looks fine at L3 but actually has no internet"
+  /// fix: without this demotion the bonded forwarder would happily send
+  /// new flows over a Wi-Fi network that can't reach the web because the
+  /// per-link RTT probe sees the AP itself answering TCP SYNs locally.
+  ///
+  /// We ALSO demote any link the [LinkSupervisor] is currently flagging
+  /// as `unhealthy` — sustained high loss or runaway latency. The
+  /// supervisor already debounces (3 consecutive evaluations before it
+  /// publishes the unhealthy status), so this isn't twitchy: it only
+  /// kicks in for genuinely bad links, and it auto-reverses the moment
+  /// the link recovers.
   Policy _effectivePolicy() {
-    if (!settings.policy.captivePortalAssist || captiveStates.isEmpty) {
-      return settings.policy;
-    }
+    bool assist = settings.policy.captivePortalAssist;
+    bool haveCaptive = assist && captiveStates.isNotEmpty;
+    Map<String, LinkStatus> supStatuses =
+        lastHealthEvent?.statuses ?? const <String, LinkStatus>{};
+    bool haveSupervisor = supStatuses.isNotEmpty;
+    if (!haveCaptive && !haveSupervisor) return settings.policy;
     bool anyDemotion = false;
     List<Link> next = <Link>[];
     for (Link link in settings.policy.links) {
-      CaptivePortalProbeResult? state = captiveStates[link.id];
-      if (state == CaptivePortalProbeResult.captive &&
+      bool shouldDemote = false;
+      if (haveCaptive) {
+        CaptivePortalProbeResult? state = captiveStates[link.id];
+        if (state == CaptivePortalProbeResult.captive ||
+            state == CaptivePortalProbeResult.error) {
+          shouldDemote = true;
+        }
+      }
+      if (!shouldDemote && haveSupervisor) {
+        LinkStatus? sup = supStatuses[link.id];
+        if (sup == LinkStatus.unhealthy) shouldDemote = true;
+      }
+      if (shouldDemote &&
           link.priority != LinkPriority.backup &&
           link.priority != LinkPriority.never) {
         anyDemotion = true;
@@ -721,9 +705,7 @@ class DispatchController extends ChangeNotifier {
         next.add(link);
       }
     }
-    if (!anyDemotion) {
-      return settings.policy;
-    }
+    if (!anyDemotion) return settings.policy;
     return settings.policy.copyWith(links: next);
   }
 
@@ -735,9 +717,9 @@ class DispatchController extends ChangeNotifier {
     bool assist = settings.policy.captivePortalAssist;
     Set<String> wantedIds = assist
         ? settings.policy.links
-            .map((Link l) => l.id)
-            .where((String id) => id.isNotEmpty)
-            .toSet()
+              .map((Link l) => l.id)
+              .where((String id) => id.isNotEmpty)
+              .toSet()
         : <String>{};
     // Tear down detectors that should no longer exist.
     List<String> toRemove = <String>[];
@@ -792,7 +774,6 @@ class DispatchController extends ChangeNotifier {
     }
     notifyListeners();
   }
-
 
   /// Switch to a different transport backend. The current backend is stopped
   /// and disposed; the new one takes over the streams and persisted settings.
@@ -855,13 +836,11 @@ class DispatchController extends ChangeNotifier {
       notifyListeners();
     });
     _eventSubscription = _transport.events.listen(addEvent);
-    _flowSubscription = _transport.flows.listen(_handleFlow);
     _metricSubscription = _transport.metrics.listen(_handleMetric);
   }
 
   void _wireProbes() {
-    _probeMetricSubscription =
-        probeService.metrics.listen((LinkMetric metric) {
+    _probeMetricSubscription = probeService.metrics.listen((LinkMetric metric) {
       // [_handleMetric] handles both the live merge and the history
       // store update so probe + transport samples share the same
       // record() path.
@@ -877,8 +856,7 @@ class DispatchController extends ChangeNotifier {
     if (linkMetrics.isNotEmpty) {
       supervisor.updateMetrics(linkMetrics);
     }
-    _supervisorSubscription =
-        supervisor.events.listen(_handleHealthEvent);
+    _supervisorSubscription = supervisor.events.listen(_handleHealthEvent);
   }
 
   /// Start polling macOS for friendly per-interface names (SSIDs, hardware
@@ -917,6 +895,7 @@ class DispatchController extends ChangeNotifier {
   /// We never auto-restart a user-stopped transport, only one that the kill
   /// switch shut down — the [stoppedByKillSwitch] guard tracks that.
   void _handleHealthEvent(LinkHealthEvent event) {
+    LinkHealthEvent? prior = lastHealthEvent;
     lastHealthEvent = event;
     // Keep the running transport's metric snapshot in sync so the next
     // updatePolicy / restart sees the latest readings without a round-trip.
@@ -925,25 +904,54 @@ class DispatchController extends ChangeNotifier {
       active.applyMetrics(linkMetrics);
     }
 
+    // If the supervisor's per-link status changed, recompute the
+    // effective policy and push it to the transport. This is what makes
+    // "deprioritize bad networks until they stabilize" actually take
+    // effect at the forwarder — without it the graphic would turn red
+    // but new flows would keep getting routed over the failing link.
+    bool statusesChanged =
+        prior == null || !_statusMapsEqual(prior.statuses, event.statuses);
+    if (statusesChanged && _transport.status.isRunning) {
+      Policy view = _effectivePolicy();
+      unawaited(_transport.updatePolicy(view));
+    }
+
     if (event.killSwitchActive && _transport.status.isRunning) {
       _stoppedByKillSwitch = true;
-      addEvent(ProxyEvent(
-        type: ProxyEventType.warning,
-        message:
-            'Kill switch engaged: no eligible links, stopping proxy.',
-      ));
+      addEvent(
+        ProxyEvent(
+          type: ProxyEventType.warning,
+          message: 'Kill switch engaged: no eligible links, stopping proxy.',
+        ),
+      );
       unawaited(_stopInternal());
     } else if (!event.killSwitchActive &&
         _stoppedByKillSwitch &&
         event.decision.hasEligible) {
       _stoppedByKillSwitch = false;
-      addEvent(ProxyEvent(
-        type: ProxyEventType.info,
-        message: 'Kill switch released: resuming proxy.',
-      ));
+      addEvent(
+        ProxyEvent(
+          type: ProxyEventType.info,
+          message: 'Kill switch released: resuming proxy.',
+        ),
+      );
       unawaited(startProxy());
     }
     notifyListeners();
+  }
+
+  /// Cheap deep-compare for two `Map<String, LinkStatus>` instances. Used
+  /// to decide whether a supervisor event represents an actual change.
+  static bool _statusMapsEqual(
+    Map<String, LinkStatus> a,
+    Map<String, LinkStatus> b,
+  ) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    for (MapEntry<String, LinkStatus> e in a.entries) {
+      if (b[e.key] != e.value) return false;
+    }
+    return true;
   }
 
   /// Tracks whether the most recent `stop` was driven by the kill switch.
@@ -953,27 +961,11 @@ class DispatchController extends ChangeNotifier {
   Future<void> _detachTransport() async {
     await _statusSubscription?.cancel();
     await _eventSubscription?.cancel();
-    await _flowSubscription?.cancel();
     await _metricSubscription?.cancel();
     _statusSubscription = null;
     _eventSubscription = null;
-    _flowSubscription = null;
     _metricSubscription = null;
     await _transport.dispose();
-  }
-
-  void _handleFlow(FlowStat flow) {
-    int idx = flows.indexWhere((FlowStat existing) {
-      return existing.flowId == flow.flowId;
-    });
-    if (idx >= 0) {
-      List<FlowStat> next = List<FlowStat>.of(flows);
-      next[idx] = flow;
-      flows = next;
-    } else {
-      flows = <FlowStat>[flow, ...flows].take(64).toList();
-    }
-    notifyListeners();
   }
 
   void _handleMetric(LinkMetric metric) {
@@ -983,13 +975,7 @@ class DispatchController extends ChangeNotifier {
     // measured, so merge instead and keep the latest known value per field.
     LinkMetric? prior = linkMetrics[metric.linkId];
     LinkMetric merged = _mergeMetric(prior, metric);
-    linkMetrics = <String, LinkMetric>{
-      ...linkMetrics,
-      metric.linkId: merged,
-    };
-    // Push the merged sample into the history store so the Activity tab
-    // sparklines see both probe and throughput points on the same
-    // timeline.
+    linkMetrics = <String, LinkMetric>{...linkMetrics, metric.linkId: merged};
     metricStore.record(merged);
     supervisor.updateMetric(merged);
     // Refresh the per-cycle bytes view at the same cadence as throughput.
@@ -1024,8 +1010,9 @@ class DispatchController extends ChangeNotifier {
     if (prior == null || prior.linkId != next.linkId) {
       return next.withDerivedMos();
     }
-    DateTime captured =
-        next.capturedAt.isAfter(prior.capturedAt) ? next.capturedAt : prior.capturedAt;
+    DateTime captured = next.capturedAt.isAfter(prior.capturedAt)
+        ? next.capturedAt
+        : prior.capturedAt;
     return LinkMetric(
       linkId: next.linkId,
       capturedAt: captured,
@@ -1063,9 +1050,6 @@ class DispatchController extends ChangeNotifier {
     unawaited(supervisor.dispose());
     namingService.removeListener(_onNamingChanged);
     namingService.dispose();
-    _pairCoordinator?.removeListener(notifyListeners);
-    _pairCoordinator?.dispose();
-    _pairCoordinator = null;
     unawaited(_detachTransport());
     super.dispose();
   }
@@ -1102,77 +1086,5 @@ class DispatchController extends ChangeNotifier {
           return TunnelTransport();
       }
     };
-  }
-
-  /// Default Pair coordinator. Uses the [PairedMethodChannelDiscovery]
-  /// (Bonjour bridge) on macOS; on every other platform the channel
-  /// soft-fails and the coordinator simply never sees peer events,
-  /// which is still useful — the UI can host on a known port and
-  /// joiners can type in `host:port` manually (future enhancement).
-  ///
-  /// The Noise identity is loaded lazily so a cold launch doesn't block
-  /// the UI on key generation. It's regenerated and persisted to the
-  /// shared Hive [Box] on first use; subsequent launches reuse the same
-  /// keypair so a paired peer's fingerprint stays stable.
-  static PairCoordinator? _defaultPairCoordinator(Box settingsBox) {
-    return PairCoordinator(
-      discovery: PairedMethodChannelDiscovery(),
-      identity: _loadOrCreateNoiseIdentity(settingsBox),
-      deviceName: _deviceNameOf(settingsBox),
-      deviceId: _deviceIdOf(settingsBox),
-    );
-  }
-
-  /// Hive keys used by the default Noise identity loader. Bumping the
-  /// suffix invalidates the cached keys (e.g. for a migration).
-  static const String _pairIdentityPrivateKey = 'pair_identity_priv_v1';
-  static const String _pairIdentityPublicKey = 'pair_identity_pub_v1';
-  static const String _pairDeviceIdKey = 'pair_device_id_v1';
-  static const String _pairDeviceNameKey = 'pair_device_name_v1';
-
-  /// Returns the persisted Noise keypair, generating + persisting a
-  /// fresh one on the first call. Failures fall back to an
-  /// ephemeral keypair so the UI still has something to render even
-  /// when Hive is read-only (e.g. a sandboxed test).
-  static Future<NoiseKeypair> _loadOrCreateNoiseIdentity(Box box) async {
-    Object? priv = box.get(_pairIdentityPrivateKey);
-    Object? pub = box.get(_pairIdentityPublicKey);
-    if (priv is List<int> && pub is List<int>) {
-      return NoiseKeypair(
-        private: Uint8List.fromList(priv),
-        public: Uint8List.fromList(pub),
-      );
-    }
-    NoiseKeypair fresh = await NoiseKeypair.generate();
-    try {
-      await box.put(_pairIdentityPrivateKey, fresh.private);
-      await box.put(_pairIdentityPublicKey, fresh.public);
-    } catch (_) {
-      // Hive may be inert in tests. Returning the fresh in-memory
-      // keypair is still correct; we just lose persistence.
-    }
-    return fresh;
-  }
-
-  static String _deviceIdOf(Box box) {
-    Object? cached = box.get(_pairDeviceIdKey);
-    if (cached is String && cached.isNotEmpty) return cached;
-    String id =
-        'mac-${DateTime.now().microsecondsSinceEpoch.toRadixString(36)}';
-    try {
-      box.put(_pairDeviceIdKey, id);
-    } catch (_) {}
-    return id;
-  }
-
-  static String _deviceNameOf(Box box) {
-    Object? cached = box.get(_pairDeviceNameKey);
-    if (cached is String && cached.isNotEmpty) return cached;
-    // Fall back to the macOS hostname when available; otherwise a
-    // friendly placeholder that's clearly user-replaceable.
-    String fallback = Platform.localHostname.isNotEmpty
-        ? Platform.localHostname
-        : 'Arcane Dispatch';
-    return fallback;
   }
 }

@@ -24,6 +24,7 @@
 		1119004325BD19B1011B7429 /* Seal.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3EDF8732E849829078CBC6 /* Seal.swift */; };
 		1842DF71713E19052B016F2B /* BondedFraming.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4CB1B01E184E900757618989 /* BondedFraming.swift */; };
 		195C5FDDB011993210E50344 /* BondedClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4D99C8767D5D40973ADEED7 /* BondedClient.swift */; };
+		AD1000020000000000000002 /* BondedSocketPool.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD1000010000000000000001 /* BondedSocketPool.swift */; };
 		1D7D0172BF8EDF441F6FF0E0 /* IPPacket.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A5D2BC43E04EE575C2752E6 /* IPPacket.swift */; };
 		23CA7A06139D8C90F904CD12 /* Noise.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D1CEA6D55C409975A8BBFAC /* Noise.swift */; };
 		289B0F8555128A0D9286D488 /* ProtocolLadder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85B14F0EC93E690A20CD36A7 /* ProtocolLadder.swift */; };
@@ -38,8 +39,6 @@
 		4B24A3F0DB8A3F20BA94813F /* PolicyEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF59C80DA82F2E05527F0DF7 /* PolicyEngine.swift */; };
 		565486931F73FA93ECE0737A /* PolicyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DC134CB37358DEAE2D0911E /* PolicyStore.swift */; };
 		5A11A11200000000F0001001 /* TunnelManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A11A11100000000F0001001 /* TunnelManager.swift */; };
-		5A11A11400000000F0001002 /* PairChannelHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A11A11300000000F0001002 /* PairChannelHandler.swift */; };
-		5A11A11600000000F0001003 /* PairedNetworkService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A11A11500000000F0001003 /* PairedNetworkService.swift */; };
 		5A11A11800000000F0001004 /* NetworkNamingHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A11A11700000000F0001004 /* NetworkNamingHandler.swift */; };
 		6E6E7AB06B98944EC80C3A7E /* BondedReassembler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E491756D35D2E33AB5415BB /* BondedReassembler.swift */; };
 		71E95F0E1D8BA4059FBC1D1B /* FlowTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = BFF8563B78B018EF62C4F0F5 /* FlowTracker.swift */; };
@@ -50,9 +49,7 @@
 		C5738EA73E64FE3CC8FFDCE6 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 29BE5CDEFDE225002C2B67EC /* NetworkExtension.framework */; };
 		D35BF7410F527DBEA4C8FCEE /* PacketPump.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BD54A4D62ABD2F0AAA8A00E /* PacketPump.swift */; };
 		DB9579ED74FAD2A1D263602B /* FlowForwarder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3F2C12C2ECAFECF70A0E089 /* FlowForwarder.swift */; };
-		DC623CC90BAE164FF68D0B30 /* StreamingClassifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA6EB7E512C97CB73849BF38 /* StreamingClassifier.swift */; };
 		DFAA6EA0D86CE75140DFD43E /* Replay.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2F29E1C00529D46A87120C9 /* Replay.swift */; };
-		F19AFEA217A9ED247029AC13 /* FlowStatsPublisher.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2E914F615B410FB28746CD9 /* FlowStatsPublisher.swift */; };
 		F63F4BC2857799D8708BF3C8 /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 489E335D1DA9DB83998CD673 /* Cocoa.framework */; };
 		F975D2691E6E1ED7062EC6A8 /* BondedScheduler.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3E371BACAEAD7EEEF86537F /* BondedScheduler.swift */; };
 		FE727D979D884279F8E3FAF9 /* ArcaneDispatchTunnel.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 9DEDA2B3EC537C00712C5C5E /* ArcaneDispatchTunnel.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -138,8 +135,6 @@
 		489E335D1DA9DB83998CD673 /* Cocoa.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Cocoa.framework; path = Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.0.sdk/System/Library/Frameworks/Cocoa.framework; sourceTree = DEVELOPER_DIR; };
 		4CB1B01E184E900757618989 /* BondedFraming.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BondedFraming.swift; sourceTree = "<group>"; };
 		5A11A11100000000F0001001 /* TunnelManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelManager.swift; sourceTree = "<group>"; };
-		5A11A11300000000F0001002 /* PairChannelHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairChannelHandler.swift; sourceTree = "<group>"; };
-		5A11A11500000000F0001003 /* PairedNetworkService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairedNetworkService.swift; sourceTree = "<group>"; };
 		5A11A11700000000F0001004 /* NetworkNamingHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NetworkNamingHandler.swift; sourceTree = "<group>"; };
 		5A5D2BC43E04EE575C2752E6 /* IPPacket.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = IPPacket.swift; path = IPPacket.swift; sourceTree = "<group>"; };
 		5BC5D362221243186DDBCD18 /* KeychainKeyStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = KeychainKeyStore.swift; sourceTree = "<group>"; };
@@ -149,7 +144,6 @@
 		9740EEB21CF90195004384FC /* Debug.xcconfig */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
 		9DEDA2B3EC537C00712C5C5E /* ArcaneDispatchTunnel.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ArcaneDispatchTunnel.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		9E491756D35D2E33AB5415BB /* BondedReassembler.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BondedReassembler.swift; sourceTree = "<group>"; };
-		A2E914F615B410FB28746CD9 /* FlowStatsPublisher.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FlowStatsPublisher.swift; sourceTree = "<group>"; };
 		A3B4B96753892DA4F1A78602 /* Pods-Runner.profile.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.profile.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.profile.xcconfig"; sourceTree = "<group>"; };
 		AA0245990BDE90BC56A4E117 /* Pods_RunnerTests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_RunnerTests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		AF59C80DA82F2E05527F0DF7 /* PolicyEngine.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = PolicyEngine.swift; sourceTree = "<group>"; };
@@ -157,11 +151,11 @@
 		C2F29E1C00529D46A87120C9 /* Replay.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Replay.swift; sourceTree = "<group>"; };
 		C3E371BACAEAD7EEEF86537F /* BondedScheduler.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BondedScheduler.swift; sourceTree = "<group>"; };
 		C4D99C8767D5D40973ADEED7 /* BondedClient.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BondedClient.swift; sourceTree = "<group>"; };
+		AD1000010000000000000001 /* BondedSocketPool.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BondedSocketPool.swift; sourceTree = "<group>"; };
 		CEDD76E44562EEDD6FC01FBD /* Pods-RunnerTests.profile.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.profile.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.profile.xcconfig"; sourceTree = "<group>"; };
 		CFCD491EF67AFA89D2268AF6 /* Pods-Runner.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.release.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.release.xcconfig"; sourceTree = "<group>"; };
 		D3F2C12C2ECAFECF70A0E089 /* FlowForwarder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FlowForwarder.swift; path = FlowForwarder.swift; sourceTree = "<group>"; };
 		EE3EDF8732E849829078CBC6 /* Seal.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Seal.swift; sourceTree = "<group>"; };
-		FA6EB7E512C97CB73849BF38 /* StreamingClassifier.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StreamingClassifier.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -196,7 +190,6 @@
 		0FED91D3F42B15E66DC7A26A /* Engine */ = {
 			isa = PBXGroup;
 			children = (
-				A2E914F615B410FB28746CD9 /* FlowStatsPublisher.swift */,
 				BFF8563B78B018EF62C4F0F5 /* FlowTracker.swift */,
 				3BD54A4D62ABD2F0AAA8A00E /* PacketPump.swift */,
 				AF59C80DA82F2E05527F0DF7 /* PolicyEngine.swift */,
@@ -286,8 +279,6 @@
 				33CC11122044BFA00003C045 /* MainFlutterWindow.swift */,
 				33AA00002044A3C60003A001 /* DispatchTrayController.swift */,
 				5A11A11100000000F0001001 /* TunnelManager.swift */,
-				5A11A11300000000F0001002 /* PairChannelHandler.swift */,
-				5A11A11500000000F0001003 /* PairedNetworkService.swift */,
 				5A11A11700000000F0001004 /* NetworkNamingHandler.swift */,
 				33E51913231747F40026EE4D /* DebugProfile.entitlements */,
 				33E51914231749380026EE4D /* Release.entitlements */,
@@ -318,6 +309,7 @@
 				13758BAA4EB03E41437FB2D9 /* BondedModes.swift */,
 				9E491756D35D2E33AB5415BB /* BondedReassembler.swift */,
 				C3E371BACAEAD7EEEF86537F /* BondedScheduler.swift */,
+				AD1000010000000000000001 /* BondedSocketPool.swift */,
 				85B14F0EC93E690A20CD36A7 /* ProtocolLadder.swift */,
 			);
 			path = Bonded;
@@ -330,19 +322,10 @@
 				C16967FA4A11306A4EFA33DA /* Crypto */,
 				0FED91D3F42B15E66DC7A26A /* Engine */,
 				0F66728B7D46898D7C8AF8F8 /* PacketTunnelProvider.swift */,
-				BC2950F414767AB9CD39415C /* QoS */,
 				3E135428F1B8CF1EBA6A54BE /* Info.plist */,
 				28684E6A386A9DAC0A73B293 /* ArcaneDispatchTunnel.entitlements */,
 			);
 			path = ArcaneDispatchTunnel;
-			sourceTree = "<group>";
-		};
-		BC2950F414767AB9CD39415C /* QoS */ = {
-			isa = PBXGroup;
-			children = (
-				FA6EB7E512C97CB73849BF38 /* StreamingClassifier.swift */,
-			);
-			path = QoS;
 			sourceTree = "<group>";
 		};
 		C16967FA4A11306A4EFA33DA /* Crypto */ = {
@@ -625,8 +608,6 @@
 				33CC11132044BFA00003C045 /* MainFlutterWindow.swift in Sources */,
 				33AA00012044A3C60003A001 /* DispatchTrayController.swift in Sources */,
 				5A11A11200000000F0001001 /* TunnelManager.swift in Sources */,
-				5A11A11400000000F0001002 /* PairChannelHandler.swift in Sources */,
-				5A11A11600000000F0001003 /* PairedNetworkService.swift in Sources */,
 				5A11A11800000000F0001004 /* NetworkNamingHandler.swift in Sources */,
 				33CC10F12044A3C60003C045 /* AppDelegate.swift in Sources */,
 				335BBD1B22A9A15E00E9071D /* GeneratedPluginRegistrant.swift in Sources */,
@@ -638,6 +619,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				195C5FDDB011993210E50344 /* BondedClient.swift in Sources */,
+				AD1000020000000000000002 /* BondedSocketPool.swift in Sources */,
 				1842DF71713E19052B016F2B /* BondedFraming.swift in Sources */,
 				C4F6E6B11E44F66D503F59E9 /* BondedModes.swift in Sources */,
 				6E6E7AB06B98944EC80C3A7E /* BondedReassembler.swift in Sources */,
@@ -647,13 +629,11 @@
 				23CA7A06139D8C90F904CD12 /* Noise.swift in Sources */,
 				DFAA6EA0D86CE75140DFD43E /* Replay.swift in Sources */,
 				1119004325BD19B1011B7429 /* Seal.swift in Sources */,
-				F19AFEA217A9ED247029AC13 /* FlowStatsPublisher.swift in Sources */,
 				71E95F0E1D8BA4059FBC1D1B /* FlowTracker.swift in Sources */,
 				D35BF7410F527DBEA4C8FCEE /* PacketPump.swift in Sources */,
 				4B24A3F0DB8A3F20BA94813F /* PolicyEngine.swift in Sources */,
 				565486931F73FA93ECE0737A /* PolicyStore.swift in Sources */,
 				B0CA5B1C629253FB9A1EF037 /* PacketTunnelProvider.swift in Sources */,
-				DC623CC90BAE164FF68D0B30 /* StreamingClassifier.swift in Sources */,
 				1D7D0172BF8EDF441F6FF0E0 /* IPPacket.swift in Sources */,
 				DB9579ED74FAD2A1D263602B /* FlowForwarder.swift in Sources */,
 			);

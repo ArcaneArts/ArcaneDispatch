@@ -80,8 +80,11 @@ class NoiseTransport {
   /// days before overflow.
   int _sealedBytes = 0;
 
-  NoiseTransport({required this.sendKey, required this.recvKey, DateTime? createdAt})
-      : createdAt = createdAt ?? DateTime.now();
+  NoiseTransport({
+    required this.sendKey,
+    required this.recvKey,
+    DateTime? createdAt,
+  }) : createdAt = createdAt ?? DateTime.now();
 
   /// Total plaintext bytes sealed since the transport was minted.
   int get sealedBytes => _sealedBytes;
@@ -137,11 +140,7 @@ class NoiseTransport {
     int macStart = ciphertext.length - 16;
     Uint8List body = Uint8List.sublistView(ciphertext, 0, macStart);
     Uint8List mac = Uint8List.sublistView(ciphertext, macStart);
-    SecretBox box = SecretBox(
-      body,
-      nonce: _nonce12(nonce),
-      mac: Mac(mac),
-    );
+    SecretBox box = SecretBox(body, nonce: _nonce12(nonce), mac: Mac(mac));
     List<int> plain = await _aead.decrypt(
       box,
       secretKey: SecretKey(recvKey),
@@ -430,9 +429,7 @@ class HandshakeState {
   }
 
   /// Snapshot of the current transcript hash. Identical on both peers
-  /// after the handshake completes when no tampering occurred. Used by
-  /// Pair & Share to derive a short numeric verification code that the
-  /// user reads off both screens.
+  /// after the handshake completes when no tampering occurred.
   Uint8List transcriptHash() => Uint8List.fromList(_h);
 }
 
@@ -503,21 +500,80 @@ Uint8List _hmacSha256(Uint8List key, Uint8List data) {
 Uint8List _sha256Sync(Uint8List data) {
   // Initial hash values (first 32 bits of fractional parts of sqrt(2..19)).
   const List<int> initialH = <int>[
-    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+    0x6a09e667,
+    0xbb67ae85,
+    0x3c6ef372,
+    0xa54ff53a,
+    0x510e527f,
+    0x9b05688c,
+    0x1f83d9ab,
+    0x5be0cd19,
   ];
   const List<int> kConst = <int>[
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,
-    0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
-    0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
-    0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
-    0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
-    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
-    0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
-    0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
-    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    0x428a2f98,
+    0x71374491,
+    0xb5c0fbcf,
+    0xe9b5dba5,
+    0x3956c25b,
+    0x59f111f1,
+    0x923f82a4,
+    0xab1c5ed5,
+    0xd807aa98,
+    0x12835b01,
+    0x243185be,
+    0x550c7dc3,
+    0x72be5d74,
+    0x80deb1fe,
+    0x9bdc06a7,
+    0xc19bf174,
+    0xe49b69c1,
+    0xefbe4786,
+    0x0fc19dc6,
+    0x240ca1cc,
+    0x2de92c6f,
+    0x4a7484aa,
+    0x5cb0a9dc,
+    0x76f988da,
+    0x983e5152,
+    0xa831c66d,
+    0xb00327c8,
+    0xbf597fc7,
+    0xc6e00bf3,
+    0xd5a79147,
+    0x06ca6351,
+    0x14292967,
+    0x27b70a85,
+    0x2e1b2138,
+    0x4d2c6dfc,
+    0x53380d13,
+    0x650a7354,
+    0x766a0abb,
+    0x81c2c92e,
+    0x92722c85,
+    0xa2bfe8a1,
+    0xa81a664b,
+    0xc24b8b70,
+    0xc76c51a3,
+    0xd192e819,
+    0xd6990624,
+    0xf40e3585,
+    0x106aa070,
+    0x19a4c116,
+    0x1e376c08,
+    0x2748774c,
+    0x34b0bcb5,
+    0x391c0cb3,
+    0x4ed8aa4a,
+    0x5b9cca4f,
+    0x682e6ff3,
+    0x748f82ee,
+    0x78a5636f,
+    0x84c87814,
+    0x8cc70208,
+    0x90befffa,
+    0xa4506ceb,
+    0xbef9a3f7,
+    0xc67178f2,
   ];
 
   // Pre-processing: pad to multiple of 64 bytes.
@@ -538,16 +594,15 @@ Uint8List _sha256Sync(Uint8List data) {
     List<int> w = List<int>.filled(64, 0);
     for (int i = 0; i < 16; i++) {
       int o = chunk + i * 4;
-      w[i] = (padded[o] << 24) |
+      w[i] =
+          (padded[o] << 24) |
           (padded[o + 1] << 16) |
           (padded[o + 2] << 8) |
           padded[o + 3];
     }
     for (int i = 16; i < 64; i++) {
-      int s0 =
-          _rotr(w[i - 15], 7) ^ _rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
-      int s1 =
-          _rotr(w[i - 2], 17) ^ _rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+      int s0 = _rotr(w[i - 15], 7) ^ _rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+      int s1 = _rotr(w[i - 2], 17) ^ _rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
       w[i] = (w[i - 16] + s0 + w[i - 7] + s1) & 0xFFFFFFFF;
     }
     int a = h[0], b = h[1], c = h[2], d = h[3];
@@ -604,7 +659,10 @@ Future<Uint8List> _x25519(Uint8List priv, Uint8List pub) async {
   X25519 algo = X25519();
   SimpleKeyPair kp = await algo.newKeyPairFromSeed(priv);
   SimplePublicKey peer = SimplePublicKey(pub, type: KeyPairType.x25519);
-  SecretKey shared = await algo.sharedSecretKey(keyPair: kp, remotePublicKey: peer);
+  SecretKey shared = await algo.sharedSecretKey(
+    keyPair: kp,
+    remotePublicKey: peer,
+  );
   List<int> bytes = await shared.extractBytes();
   // Reject all-zero shared secrets per Noise spec.
   bool allZero = true;
