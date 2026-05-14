@@ -227,6 +227,9 @@ class TunnelTransport implements Transport {
     if (_disposed) {
       return;
     }
+    if (_state.value.state != TransportState.stopped) {
+      await stop();
+    }
     _disposed = true;
     _statusTimer?.cancel();
     _statusTimer = null;

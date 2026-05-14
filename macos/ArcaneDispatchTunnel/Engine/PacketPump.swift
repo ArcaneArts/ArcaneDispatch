@@ -30,6 +30,7 @@ final class PacketPump {
     private let engine = PolicyEngine()
     private var tracker: FlowTracker!
     private let forwarder: FlowForwarder
+    private let failOpen: (String) -> Void
     /// Cached BSD device name → `NWInterface` for outbound link binding.
     /// Refreshed on every policy/metric update via `NWPathMonitor`.
     private var bsdToInterface: [String: NWInterface] = [:]
@@ -64,10 +65,21 @@ final class PacketPump {
     private var bondedWireIds: [String: UInt16] = [:]
     private var bondedSocketPool: BondedSocketPool?
     private var bondedRelayEndpoint: BondedRelayEndpoint?
+    private var failOpenRequested = false
+    private var lastNoEligibleLogAt = Date.distantPast
+    private var lastRelayDropLogAt = Date.distantPast
+    private let relayResponseTimeout: TimeInterval = 3.0
+    private var relayResponseTimer: DispatchSourceTimer?
+    private var relayLastInboundAt = Date.distantPast
 
-    init(packetFlow: NEPacketTunnelFlow, policy: ExtensionPolicy) {
+    init(
+        packetFlow: NEPacketTunnelFlow,
+        policy: ExtensionPolicy,
+        failOpen: @escaping (String) -> Void = { _ in }
+    ) {
         self.packetFlow = packetFlow
         self.policy = policy
+        self.failOpen = failOpen
         self.forwarder = FlowForwarder(packetFlow: packetFlow, queue: queue)
         self.tracker = FlowTracker()
     }
@@ -94,6 +106,8 @@ final class PacketPump {
             self.running = false
             self.sweepTimer?.cancel()
             self.sweepTimer = nil
+            self.relayResponseTimer?.cancel()
+            self.relayResponseTimer = nil
             self.pathMonitor.cancel()
             self.forwarder.shutdown()
             self.bondedClient?.dispose()
@@ -152,10 +166,9 @@ final class PacketPump {
                 // Drop packets silently. Counters could go here later.
                 return
             }
-            // Even without kill switch we have nowhere to send the packet —
-            // there's no fallback path until Phase 7 wires the bonded
-            // scheduler. For now, drop with a log.
-            log.warning("no eligible links — dropping \(packets.count) packets")
+            logNoEligible(count: packets.count)
+            requestFailOpen(
+                "No eligible ArcaneDispatch links remain. Disconnecting the tunnel to restore system internet.")
             return
         }
 
@@ -167,7 +180,17 @@ final class PacketPump {
             }
             let linkId = flow?.linkId ?? assignLink()
             if let client = bondedClient, bondedRelayEndpoint != nil {
-                client.send(packet)
+                let sent = client.send(packet)
+                if sent == 0 {
+                    if policy.killSwitch {
+                        logRelayDrop()
+                    } else {
+                        requestFailOpen(
+                            "ArcaneDispatch relay is not connected. Disconnecting the tunnel to restore system internet.")
+                    }
+                } else {
+                    observeRelayOutbound()
+                }
                 continue
             }
 
@@ -222,24 +245,6 @@ final class PacketPump {
                 nextWireId &+= 1
             }
         }
-        // Build per-link scheduler state from the decision + latest metric.
-        // We feed the engine's already-resolved weight + priority directly so
-        // the bonded scheduler agrees with the legacy per-flow forwarder on
-        // which links count. Bandwidth isn't probed yet (Phase 7 keepalives
-        // will start populating it); the bonded scheduler's 1 Mbps default
-        // is fine until then.
-        let states: [BondedLinkState] = decision.eligible.map { dl in
-            let m = metrics[dl.link.id]
-            return BondedLinkState(
-                linkId: dl.link.id,
-                wireId: bondedWireIds[dl.link.id] ?? 0,
-                priority: bondedPriority(dl.sourcePriority),
-                status: .healthy,
-                weight: dl.weight,
-                rttMs: m?.rttMs ?? 50.0,
-                lossFraction: m?.loss ?? 0.0
-            )
-        }
         // Map the policy's bonding mode to the bonded layer enum.
         let mode = bondedMode(policy.mode)
         if endpoint != bondedRelayEndpoint {
@@ -251,11 +256,16 @@ final class PacketPump {
                     endpoint: endpoint,
                     queue: queue,
                     inbound: { [weak self] bytes in
+                        self?.observeRelayInbound()
                         self?.bondedClient?.onInboundBytes(bytes)
+                    },
+                    readinessChanged: { [weak self] in
+                        self?.refreshBondedClientLinks()
                     })
                 log.info("relay socket pool configured endpoint=\(endpoint.raw, privacy: .public)")
             }
         }
+        let states = bondedLinkStates()
         if bondedClient == nil {
             // First time the flag's been on this session. Pick a random
             // u64 session id; Phase 8 server lookup will use this to route.
@@ -265,16 +275,20 @@ final class PacketPump {
                 config: cfg,
                 sendOnLink: { [weak self] linkId, bytes in
                     guard let self else { return }
-                    if let pool = self.bondedSocketPool {
-                        pool.send(linkId: linkId, bytes: bytes)
-                    } else {
-                        self.log.debug(
-                            "bonded send \(bytes.count, privacy: .public)B on link=\(linkId, privacy: .public)")
+                    self.queue.async { [weak self] in
+                        guard let self else { return }
+                        if let pool = self.bondedSocketPool {
+                            pool.send(linkId: linkId, bytes: bytes)
+                        } else {
+                            self.log.debug(
+                                "bonded send \(bytes.count, privacy: .public)B on link=\(linkId, privacy: .public)")
+                        }
                     }
-                },
-                queue: queue)
+                })
             client.reassembler.onOutbound = { [weak self] packet in
-                self?.writeInboundPacketToFlow(packet)
+                self?.queue.async { [weak self] in
+                    self?.writeInboundPacketToFlow(packet)
+                }
             }
             client.updateLinks(states)
             client.start()
@@ -288,6 +302,31 @@ final class PacketPump {
             bondedClient?.setMode(mode)
         }
         bondedSocketPool?.updateLinks(linkInterfacesForEligibleLinks())
+        refreshBondedClientLinks()
+    }
+
+    private func bondedLinkStates() -> [BondedLinkState] {
+        return decision.eligible.compactMap { dl in
+            let id = dl.link.id
+            if bondedRelayEndpoint != nil,
+               bondedSocketPool?.isReady(linkId: id) != true {
+                return nil
+            }
+            let m = metrics[id]
+            return BondedLinkState(
+                linkId: id,
+                wireId: bondedWireIds[id] ?? 0,
+                priority: bondedPriority(dl.sourcePriority),
+                status: .healthy,
+                weight: dl.weight,
+                rttMs: m?.rttMs ?? 50.0,
+                lossFraction: m?.loss ?? 0.0
+            )
+        }
+    }
+
+    private func refreshBondedClientLinks() {
+        bondedClient?.updateLinks(bondedLinkStates())
     }
 
     /// Translate the policy's bonding-mode string into the bonded layer
@@ -356,6 +395,7 @@ final class PacketPump {
         }
         forwarder.setLinkInterfaces(ifaces, bsdMap: bsds)
         bondedSocketPool?.updateLinks(ifaces)
+        refreshBondedClientLinks()
     }
 
     private func linkInterfacesForEligibleLinks() -> [String: NWInterface] {
@@ -367,6 +407,54 @@ final class PacketPump {
             }
         }
         return ifaces
+    }
+
+    private func requestFailOpen(_ reason: String) {
+        guard !failOpenRequested else { return }
+        failOpenRequested = true
+        relayResponseTimer?.cancel()
+        relayResponseTimer = nil
+        log.warning("\(reason, privacy: .public)")
+        failOpen(reason)
+    }
+
+    private func logNoEligible(count: Int) {
+        let now = Date()
+        guard now.timeIntervalSince(lastNoEligibleLogAt) >= 5 else { return }
+        lastNoEligibleLogAt = now
+        log.warning("no eligible links; fail-open disconnect requested after \(count, privacy: .public) packets")
+    }
+
+    private func logRelayDrop() {
+        let now = Date()
+        guard now.timeIntervalSince(lastRelayDropLogAt) >= 5 else { return }
+        lastRelayDropLogAt = now
+        log.warning("relay unavailable and kill switch is enabled; dropping packet")
+    }
+
+    private func observeRelayInbound() {
+        relayLastInboundAt = Date()
+        relayResponseTimer?.cancel()
+        relayResponseTimer = nil
+    }
+
+    private func observeRelayOutbound() {
+        guard !policy.killSwitch else { return }
+        guard relayResponseTimer == nil else { return }
+        let sentAt = Date()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        relayResponseTimer = timer
+        timer.schedule(deadline: .now() + relayResponseTimeout)
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            self.relayResponseTimer = nil
+            if self.relayLastInboundAt >= sentAt {
+                return
+            }
+            self.requestFailOpen(
+                "ArcaneDispatch relay did not return traffic within \(String(format: "%.0f", self.relayResponseTimeout))s. Disconnecting the tunnel to restore system internet.")
+        }
+        timer.resume()
     }
 
     private func writeInboundPacketToFlow(_ packet: Data) {

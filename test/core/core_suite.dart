@@ -299,6 +299,33 @@ void corePolicySuite() {
       expect(loaded.policy.killSwitch, isTrue);
       // Policy.links should be re-synced with the freshly-read link list.
       expect(loaded.policy.links.single.id, 'l1');
+      expect(loaded.policy.serverUrl, DispatchSettings.defaultRelayUrl);
+      expect(loaded.policy.serverToken, DispatchSettings.defaultRelayToken);
+      expect(loaded.policy.bondedTransport, isTrue);
+    });
+
+    test('load forces saved relay config back to the SLC default', () async {
+      Policy stale = const Policy(
+        serverUrl: 'udp://old.example.com:4430',
+        serverToken: 'old-token',
+        bondedTransport: false,
+      );
+      await box.put('policy_v1', stale.encode());
+
+      DispatchSettings loaded = DispatchSettings.load(box);
+      expect(loaded.policy.serverUrl, DispatchSettings.defaultRelayUrl);
+      expect(loaded.policy.serverToken, DispatchSettings.defaultRelayToken);
+      expect(loaded.policy.bondedTransport, isTrue);
+    });
+
+    test('load and save keep connect-on-launch disabled', () async {
+      await box.put('start_proxy_on_launch', true);
+
+      DispatchSettings loaded = DispatchSettings.load(box);
+      expect(loaded.startProxyOnLaunch, isFalse);
+
+      await loaded.copyWith(startProxyOnLaunch: true).save(box);
+      expect(box.get('start_proxy_on_launch'), isFalse);
     });
 
     test('save mirrors selectedTargets back to legacy key', () async {

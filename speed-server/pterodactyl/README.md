@@ -25,6 +25,10 @@ part that may need node-level privileges:
 Without those, the relay can still start and accept frames, but it cannot be
 the final internet-exit VPN path.
 
+If the startup log includes `tun: false`, sessions opening only proves the Mac
+can reach the relay port. System-wide internet through ArcaneDispatch requires
+the relay to start with `tun: true` and NAT/forwarding available on the host.
+
 ## Egg
 
 Import:

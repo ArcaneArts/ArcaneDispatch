@@ -29,6 +29,7 @@ Future<void> main() async {
     controller.addListener(() {
       WindowController.hideOnBlur = controller.settings.hideOnBlur;
     });
+    WindowController.beforeExit = controller.stopProxy;
     unawaited(controller.initialize());
     runApp(DispatchApp(controller: controller));
   } catch (error, stackTrace) {

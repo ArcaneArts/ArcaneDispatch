@@ -16,6 +16,7 @@ class WindowController {
   static const String _trayIconAsset = 'assets/tray.png';
 
   static bool hideOnBlur = true;
+  static Future<void> Function()? beforeExit;
   static StreamSubscription<MacOSTrayEvent>? _macOSSubscription;
 
   static WindowOptions get _windowOptions {
@@ -42,7 +43,7 @@ class WindowController {
       await windowManager.hide();
       await windowManager.setBackgroundColor(Colors.transparent);
       if (Platform.isMacOS) {
-        await windowManager.setMovable(false);
+        await windowManager.setMovable(true);
       }
       await windowManager.setAsFrameless();
       await windowManager.setHasShadow(false);
@@ -100,6 +101,10 @@ class WindowController {
   }
 
   static Future<void> exitApp() async {
+    await beforeExit?.call();
+    if (Platform.isMacOS && await MacOSTrayService.instance.quit()) {
+      return;
+    }
     await windowManager.destroy();
     exit(0);
   }

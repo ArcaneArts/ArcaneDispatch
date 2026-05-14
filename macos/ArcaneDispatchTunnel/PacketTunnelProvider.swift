@@ -101,7 +101,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             self.log.info("startTunnel: tunnel network settings applied")
             // Hand the packet flow off to the pump. The pump runs on its own
             // dispatch queue and stays alive until `stopTunnel` cancels it.
-            self.pump = PacketPump(packetFlow: self.packetFlow, policy: policy)
+            self.pump = PacketPump(
+                packetFlow: self.packetFlow,
+                policy: policy,
+                failOpen: { [weak self] reason in
+                    let error = NSError(
+                        domain: "art.arcane.dispatch.tunnel",
+                        code: 1001,
+                        userInfo: [NSLocalizedDescriptionKey: reason])
+                    self?.cancelTunnelWithError(error)
+                })
             self.pump?.start()
             completionHandler(nil)
         }

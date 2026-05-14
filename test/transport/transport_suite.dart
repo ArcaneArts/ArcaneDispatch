@@ -478,6 +478,32 @@ void tunnelTransportSuite() {
   });
 
   group('TunnelTransport.dispose', () {
+    test('stops a running tunnel before closing streams', () async {
+      _FakeTunnelChannel fake = _FakeTunnelChannel(
+        installResult: TunnelInstallResult.ok(),
+        statusQueue: <TunnelStatus>[
+          TunnelStatus(
+            kind: TunnelStatusKind.connected,
+            extensionBundleId: 'b',
+          ),
+        ],
+      );
+      TunnelTransport transport = TunnelTransport(
+        channel: fake,
+        statusPollInterval: const Duration(milliseconds: 5),
+      );
+
+      await transport.start(buildPolicy());
+      await _pumpUntil(
+        () => transport.status.state == TransportState.running,
+        timeout: const Duration(seconds: 1),
+      );
+      await transport.dispose();
+
+      expect(fake.stopCalls, 1);
+      expect(transport.status.state, TransportState.stopped);
+    });
+
     test('is idempotent and closes all streams', () async {
       _FakeTunnelChannel fake = _FakeTunnelChannel(
         installResult: TunnelInstallResult.ok(),

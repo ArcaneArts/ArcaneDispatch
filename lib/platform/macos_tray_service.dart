@@ -87,6 +87,15 @@ class MacOSTrayService {
     }
   }
 
+  Future<bool> quit() async {
+    try {
+      await _channel.invokeMethod<void>('quit');
+      return true;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
   void _attachHandler() {
     if (_attached) {
       return;

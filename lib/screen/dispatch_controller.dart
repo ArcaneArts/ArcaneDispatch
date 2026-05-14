@@ -43,6 +43,13 @@ typedef TransportFactory =
 /// layers new accessors (`linkMetrics`, `transportKind`,
 /// `setLinks`, `setPolicy`, `setTransportKind`) for the upcoming dashboard.
 class DispatchController extends ChangeNotifier {
+  static const String _noStartLinksMessage =
+      'No usable network is ready yet. Join Wi-Fi, plug in Ethernet, or unlock your iPhone, tap Trust This Mac, and enable Personal Hotspot.';
+  static const String _allLinksDisabledMessage =
+      'Every network is turned off in Dispatch. Turn on at least one Wi-Fi, Ethernet, or tether link before starting.';
+  static const String _noHealthyLinksMessage =
+      'No selected network has confirmed internet yet. Check the network cards, sign in to any captive portal, or reconnect the tether.';
+
   final NetworkInterfaceRepository repository;
   final Box settingsBox;
   final TransportFactory _transportFactory;
@@ -200,6 +207,9 @@ class DispatchController extends ChangeNotifier {
   }
 
   Future<void> initialize() async {
+    if (_transport.kind == TransportKind.tunnel) {
+      await _transport.stop();
+    }
     // Re-hydrate the latest metric snapshot from the previous run so the UI
     // has something to render before the first probe tick lands.
     Map<String, LinkMetric> seeded = metricStore.warmStart();
@@ -217,75 +227,6 @@ class DispatchController extends ChangeNotifier {
     _reconcileCaptiveDetectors();
     await refreshInterfaces();
     probeService.updateLinks(settings.links);
-    if (settings.startProxyOnLaunch && settings.links.isNotEmpty) {
-      // SAFETY: Don't blindly auto-start. The tunnel grabs the system
-      // default route the instant it comes up — if the forwarder has no
-      // healthy link to forward through, the user loses internet until
-      // they quit the app. Defer the start until we've confirmed at
-      // least one adopted link is currently reachable.
-      unawaited(_autoStartIfHealthy());
-    }
-  }
-
-  /// Wait briefly for the captive probes / link supervisor to publish at
-  /// least one healthy link, then start the proxy. If no link is healthy
-  /// within the window, skip auto-start and surface a clear event so the
-  /// user knows why their VPN isn't on.
-  ///
-  /// "Healthy" here means: captive probe says `clear` (or hasn't reported
-  /// yet *and* the link's interface is currently up). We're permissive
-  /// about "not yet probed" because the very first launch on a healthy
-  /// Wi-Fi will start the auto-start clock before the captive probe gets
-  /// its first 200 OK back — and we don't want to make the user wait an
-  /// extra probe cycle for the common case.
-  Future<void> _autoStartIfHealthy() async {
-    // Total budget. After this we give up and let the user click power.
-    const Duration window = Duration(seconds: 6);
-    // Poll cadence. The captive detector typically fires its first probe
-    // within ~1s of startup.
-    const Duration tick = Duration(milliseconds: 250);
-    DateTime deadline = DateTime.now().add(window);
-    while (DateTime.now().isBefore(deadline)) {
-      if (_anyLinkUsable()) {
-        await startProxy();
-        return;
-      }
-      // Stop polling if the user has hit power themselves in the meantime
-      // (very unlikely in the first 6 seconds but worth honoring).
-      if (isRunning) return;
-      await Future<void>.delayed(tick);
-    }
-    addEvent(
-      ProxyEvent(
-        type: ProxyEventType.warning,
-        message:
-            'Skipped auto-start — no network with internet access yet. Tap the power button when you\'re ready.',
-      ),
-    );
-  }
-
-  /// True iff at least one currently-adopted (`primary` / `secondary` /
-  /// `backup`) link is in a state where forwarding would actually work.
-  /// Considers the live interface snapshot and any captive probe result.
-  bool _anyLinkUsable() {
-    for (Link link in settings.policy.links) {
-      if (link.priority == LinkPriority.never) continue;
-      String? bsd = link.interfaceName?.toLowerCase();
-      if (bsd == null || bsd.isEmpty) {
-        continue;
-      }
-      bool isUp = interfaces.any((NetworkInterfaceSnapshot iface) {
-        return iface.name.toLowerCase() == bsd;
-      });
-      if (!isUp) continue;
-      CaptivePortalProbeResult? captive = captiveStates[link.id];
-      if (captive == CaptivePortalProbeResult.error ||
-          captive == CaptivePortalProbeResult.captive) {
-        continue;
-      }
-      return true;
-    }
-    return false;
   }
 
   Future<void> refreshInterfaces() async {
@@ -472,7 +413,7 @@ class DispatchController extends ChangeNotifier {
   }
 
   Future<void> setStartProxyOnLaunch(bool value) async {
-    settings = settings.copyWith(startProxyOnLaunch: value);
+    settings = settings.copyWith(startProxyOnLaunch: false);
     await settings.save(settingsBox);
     notifyListeners();
   }
@@ -581,7 +522,10 @@ class DispatchController extends ChangeNotifier {
   /// New typed API to replace the [Policy] wholesale (e.g. mode change, kill
   /// switch toggle). Keeps the link list in sync to avoid drift.
   Future<void> setPolicy(Policy policy) async {
-    Policy reconciled = policy.copyWith(links: settings.links);
+    Policy reconciled = DispatchSettings.withDefaultRelay(
+      policy,
+      links: settings.links,
+    );
     settings = settings.copyWith(policy: reconciled);
     await settings.save(settingsBox);
     probeService.updateLinks(reconciled.links);
@@ -606,34 +550,6 @@ class DispatchController extends ChangeNotifier {
     }
     await setPolicy(settings.policy.copyWith(killSwitch: value));
   }
-
-  Future<void> setRelayEndpoint(String value) async {
-    String trimmed = value.trim();
-    String? next = trimmed.isEmpty ? null : trimmed;
-    if (settings.policy.serverUrl == next) {
-      return;
-    }
-    await setPolicy(
-      settings.policy.copyWith(serverUrl: next, bondedTransport: next != null),
-    );
-  }
-
-  Future<void> setRelayToken(String value) async {
-    String trimmed = value.trim();
-    String? next = trimmed.isEmpty ? null : trimmed;
-    if (settings.policy.serverToken == next) {
-      return;
-    }
-    await setPolicy(settings.policy.copyWith(serverToken: next));
-  }
-
-  Future<void> useDefaultRelay() => setPolicy(
-    settings.policy.copyWith(
-      serverUrl: DispatchSettings.defaultRelayUrl,
-      serverToken: DispatchSettings.defaultRelayToken,
-      bondedTransport: true,
-    ),
-  );
 
   /// Focused setter for the active bonding mode. Equivalent to
   /// `setPolicy(policy.copyWith(mode: value))` but typed for the UI.
@@ -794,6 +710,15 @@ class DispatchController extends ChangeNotifier {
     if (_transport.status.isRunning) {
       return;
     }
+    String? blockedReason = _startBlockedReason();
+    if (blockedReason != null) {
+      errorText = blockedReason;
+      addEvent(
+        ProxyEvent(type: ProxyEventType.warning, message: blockedReason),
+      );
+      notifyListeners();
+      return;
+    }
     // User-initiated start always clears any pending kill-switch resume flag.
     // The supervisor will re-engage if the link state actually warrants it.
     _stoppedByKillSwitch = false;
@@ -806,6 +731,40 @@ class DispatchController extends ChangeNotifier {
       addEvent(ProxyEvent(type: ProxyEventType.error, message: errorText!));
     }
     notifyListeners();
+  }
+
+  String? _startBlockedReason() {
+    if (settings.policy.links.isEmpty) {
+      return _noStartLinksMessage;
+    }
+    bool hasEnabledLink = false;
+    bool hasConfirmedLink = false;
+    bool hasNegativeSignal = false;
+    for (Link link in settings.policy.links) {
+      if (link.priority == LinkPriority.never) {
+        continue;
+      }
+      hasEnabledLink = true;
+      CaptivePortalProbeResult? captive = captiveStates[link.id];
+      LinkStatus? status = lastHealthEvent?.statuses[link.id];
+      if (captive == CaptivePortalProbeResult.pass ||
+          status == LinkStatus.healthy ||
+          status == LinkStatus.degraded) {
+        hasConfirmedLink = true;
+      }
+      if (captive == CaptivePortalProbeResult.error ||
+          captive == CaptivePortalProbeResult.captive ||
+          status == LinkStatus.unhealthy) {
+        hasNegativeSignal = true;
+      }
+    }
+    if (!hasEnabledLink) {
+      return _allLinksDisabledMessage;
+    }
+    if (hasConfirmedLink || !hasNegativeSignal) {
+      return null;
+    }
+    return _noHealthyLinksMessage;
   }
 
   Future<void> stopProxy() async {
@@ -832,7 +791,12 @@ class DispatchController extends ChangeNotifier {
   }
 
   void _wireTransport() {
-    _statusSubscription = _transport.states.listen((TransportStatus _) {
+    _statusSubscription = _transport.states.listen((TransportStatus status) {
+      if (status.state == TransportState.failed &&
+          status.errorMessage != null &&
+          status.errorMessage!.isNotEmpty) {
+        errorText = status.errorMessage;
+      }
       notifyListeners();
     });
     _eventSubscription = _transport.events.listen(addEvent);

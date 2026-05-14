@@ -17,7 +17,7 @@ class MainFlutterWindow: NSWindow {
     self.titleVisibility = .hidden
     self.styleMask.insert(.fullSizeContentView)
     self.hasShadow = false
-    self.isMovableByWindowBackground = false
+    self.isMovableByWindowBackground = true
     if #available(macOS 11.0, *) {
       self.titlebarSeparatorStyle = .none
     }
@@ -43,6 +43,9 @@ class MainFlutterWindow: NSWindow {
         let arguments = call.arguments as? [String: Any]
         let mode = arguments?["mode"] as? String ?? "accessory"
         DispatchTrayController.shared.setActivationPolicy(mode)
+        result(nil)
+      case "quit":
+        NSApp.terminate(nil)
         result(nil)
       default:
         result(FlutterMethodNotImplemented)

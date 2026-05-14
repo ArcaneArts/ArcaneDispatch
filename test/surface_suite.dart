@@ -5,8 +5,10 @@ import 'package:arcane_dispatch/bridge/tunnel_channel.dart';
 import 'package:arcane_dispatch/core/bonding_mode.dart';
 import 'package:arcane_dispatch/core/dispatch_settings.dart';
 import 'package:arcane_dispatch/core/link.dart';
+import 'package:arcane_dispatch/core/link_metric.dart';
 import 'package:arcane_dispatch/core/network_interface_repository.dart';
 import 'package:arcane_dispatch/core/policy.dart';
+import 'package:arcane_dispatch/core/proxy_event.dart';
 import 'package:arcane_dispatch/core/socks_proxy_server.dart';
 import 'package:arcane_dispatch/core/weighted_address.dart';
 import 'package:arcane_dispatch/platform/network_naming_service.dart';
@@ -625,6 +627,88 @@ void widgetSuite() {
     await controller!.stopProxy();
     await tester.pump();
   });
+
+  testWidgets('start button reports why no network can start', (
+    WidgetTester tester,
+  ) async {
+    _RecordingTransport transport = _RecordingTransport(TransportKind.tunnel);
+    controller = DispatchController(
+      repository: const _EmptyRepository(),
+      settingsBox: settingsBox,
+      probeService: _NoopProbeService(),
+      metricStore: LinkMetricStore(),
+      namingService: NetworkNamingService(
+        fetcher: () async => const <NamedInterface>[],
+        autoStart: false,
+      ),
+      transportFactory: (TransportKind kind, DispatchSettings settings) {
+        return transport;
+      },
+    );
+    await controller!.initialize();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildDispatchTheme(),
+        home: DispatchHomeScreen(controller: controller!),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.text('Start'));
+    await tester.pump();
+
+    expect(transport.starts, 0);
+    expect(
+      find.textContaining('No usable network is ready yet'),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('transport failed status is visible under the start button', (
+    WidgetTester tester,
+  ) async {
+    await tester.runAsync(() async {
+      await settingsBox.put('selected_targets', <String>['en0']);
+      await settingsBox.put(
+        'policy_v1',
+        const Policy(captivePortalAssist: false).encode(),
+      );
+    });
+    _RecordingTransport transport = _RecordingTransport(
+      TransportKind.tunnel,
+      failMessage: 'Relay did not return packets.',
+    );
+    controller = DispatchController(
+      repository: const _FakeRepository(),
+      settingsBox: settingsBox,
+      probeService: _NoopProbeService(),
+      metricStore: LinkMetricStore(),
+      namingService: NetworkNamingService(
+        fetcher: () async => const <NamedInterface>[],
+        autoStart: false,
+      ),
+      transportFactory: (TransportKind kind, DispatchSettings settings) {
+        return transport;
+      },
+    );
+    await controller!.initialize();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: buildDispatchTheme(),
+        home: DispatchHomeScreen(controller: controller!),
+      ),
+    );
+    await tester.pump();
+
+    await tester.tap(find.text('Start'));
+    await tester.pump();
+
+    expect(transport.starts, 1);
+    expect(find.textContaining('Relay did not return packets'), findsOneWidget);
+    expect(find.text('Failed'), findsOneWidget);
+  });
 }
 
 class _FakeRepository extends NetworkInterfaceRepository {
@@ -639,6 +723,15 @@ class _FakeRepository extends NetworkInterfaceRepository {
         addresses: <InternetAddress>[InternetAddress('10.0.0.4')],
       ),
     ];
+  }
+}
+
+class _EmptyRepository extends NetworkInterfaceRepository {
+  const _EmptyRepository();
+
+  @override
+  Future<List<NetworkInterfaceSnapshot>> listUsableInterfaces() async {
+    return <NetworkInterfaceSnapshot>[];
   }
 }
 
@@ -689,6 +782,81 @@ class _FakeServer extends SocksProxyServer {
   @override
   Future<void> stop() async {
     started = false;
+  }
+}
+
+class _RecordingTransport implements Transport {
+  @override
+  final TransportKind kind;
+
+  final String? failMessage;
+  final LatestStream<TransportStatus> _state = LatestStream<TransportStatus>(
+    TransportStatus(state: TransportState.stopped),
+  );
+  final StreamController<LinkMetric> _metrics =
+      StreamController<LinkMetric>.broadcast();
+  final StreamController<ProxyEvent> _events =
+      StreamController<ProxyEvent>.broadcast();
+
+  int starts = 0;
+
+  _RecordingTransport(this.kind, {this.failMessage});
+
+  @override
+  TransportStatus get status {
+    return _state.value;
+  }
+
+  @override
+  Stream<TransportStatus> get states {
+    return _state.stream;
+  }
+
+  @override
+  Stream<LinkMetric> get metrics {
+    return _metrics.stream;
+  }
+
+  @override
+  Stream<ProxyEvent> get events {
+    return _events.stream;
+  }
+
+  @override
+  Future<void> start(Policy policy) async {
+    starts++;
+    if (failMessage != null) {
+      _state.add(
+        TransportStatus(
+          state: TransportState.failed,
+          errorMessage: failMessage,
+        ),
+      );
+      return;
+    }
+    _state.add(
+      TransportStatus(state: TransportState.running, endpoint: 'fake'),
+    );
+  }
+
+  @override
+  Future<void> stop() async {
+    _state.add(TransportStatus(state: TransportState.stopped));
+  }
+
+  @override
+  Future<void> updatePolicy(Policy policy) async {}
+
+  @override
+  Map<String, int> dataUsedSnapshot() {
+    return const <String, int>{};
+  }
+
+  @override
+  Future<void> dispose() async {
+    await _metrics.close();
+    await _events.close();
+    await _state.close();
   }
 }
 

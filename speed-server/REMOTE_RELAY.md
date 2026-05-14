@@ -228,6 +228,7 @@ With the tunnel active, that should return the SLC server public IP. During a la
 ## Quick failure map
 
 - Installer says `UDP port 7777 is already in use`: the game server or another process already owns that UDP port.
+- Relay log says `tun: false` but sessions open: the Mac is reaching the relay, but the server is not an internet egress path yet. Enable TUN/NAT on the host or move the relay to a VPS/bare-metal service with `/dev/net/tun`, forwarding, and NAT.
 - Installer says `TCP port 7778 is already in use`: another process already owns that TCP port.
 - Service fails immediately: check `journalctl -u dispatch-speed-server -b --no-pager`.
 - Client cannot connect: verify router/provider forwarding for UDP 7777 and TCP 7778, then run `sudo ss -lunp | grep 7777` and `sudo ss -ltnp | grep 7778`.

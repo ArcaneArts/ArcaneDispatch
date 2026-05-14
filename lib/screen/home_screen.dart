@@ -1,6 +1,4 @@
 import 'dart:io';
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 
 import '../core/dispatch_settings.dart';
@@ -123,16 +121,22 @@ class _PowerCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    bool running = controller.isRunning;
+    TransportStatus transportStatus = controller.transport.status;
+    bool running = transportStatus.isRunning;
+    bool busy = transportStatus.isBusy;
     double bpsIn = 0;
     double bpsOut = 0;
     int activeLinks = 0;
     for (Link link in controller.settings.policy.links) {
       LinkMetric? m = controller.linkMetrics[link.id];
       if (m == null) continue;
+      double inBps = m.bpsIn ?? 0;
+      double outBps = m.bpsOut ?? 0;
+      if (inBps > 0 || outBps > 0) {
+        activeLinks++;
+      }
       if (m.bpsIn != null) {
         bpsIn += m.bpsIn!;
-        activeLinks++;
       }
       if (m.bpsOut != null) {
         bpsOut += m.bpsOut!;
@@ -147,7 +151,31 @@ class _PowerCard extends StatelessWidget {
     for (Link link in controller.settings.policy.links) {
       totalBytesUsed += controller.dataUsedBytesByLink[link.id] ?? 0;
     }
+    String actionLabel = running ? 'Stop' : 'Start';
+    if (transportStatus.state == TransportState.starting) {
+      actionLabel = 'Starting';
+    } else if (transportStatus.state == TransportState.stopping) {
+      actionLabel = 'Stopping';
+    }
+    String badgeLabel = running ? 'Running' : 'Stopped';
+    Color badgeColor = running ? DispatchColors.ok : DispatchColors.muted;
+    if (transportStatus.state == TransportState.starting) {
+      badgeLabel = 'Starting';
+      badgeColor = DispatchColors.warn;
+    } else if (transportStatus.state == TransportState.stopping) {
+      badgeLabel = 'Stopping';
+      badgeColor = DispatchColors.warn;
+    } else if (transportStatus.state == TransportState.failed) {
+      badgeLabel = 'Failed';
+      badgeColor = DispatchColors.danger;
+    }
     Color accent = running ? DispatchColors.ok : DispatchColors.muted;
+    if (transportStatus.state == TransportState.starting ||
+        transportStatus.state == TransportState.stopping) {
+      accent = DispatchColors.warn;
+    } else if (transportStatus.state == TransportState.failed) {
+      accent = DispatchColors.danger;
+    }
     return Container(
       margin: const EdgeInsets.fromLTRB(14, 0, 14, 12),
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
@@ -170,9 +198,10 @@ class _PowerCard extends StatelessWidget {
             children: <Widget>[
               _PowerButton(
                 running: running,
-                onPressed: running
-                    ? controller.stopProxy
-                    : (totalLinks == 0 ? null : controller.startProxy),
+                busy: busy,
+                onPressed: busy
+                    ? null
+                    : (running ? controller.stopProxy : controller.startProxy),
               ),
               const SizedBox(width: 14),
               Expanded(
@@ -181,7 +210,7 @@ class _PowerCard extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: <Widget>[
                     Text(
-                      running ? 'Connected' : 'Off',
+                      _powerTitle(activeLinks, transportStatus),
                       style: TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.w800,
@@ -205,14 +234,14 @@ class _PowerCard extends StatelessWidget {
                 behavior: HitTestBehavior.opaque,
                 onTap: running
                     ? controller.stopProxy
-                    : (totalLinks == 0 ? null : controller.startProxy),
+                    : (busy ? null : controller.startProxy),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(
                     horizontal: 4,
                     vertical: 4,
                   ),
                   child: Text(
-                    running ? 'Stop' : 'Start',
+                    actionLabel,
                     style: const TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w700,
@@ -222,10 +251,7 @@ class _PowerCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 6),
-              DispatchBadge(
-                label: running ? 'Running' : 'Stopped',
-                color: running ? DispatchColors.ok : DispatchColors.muted,
-              ),
+              DispatchBadge(label: badgeLabel, color: badgeColor),
             ],
           ),
           const SizedBox(height: 14),
@@ -264,6 +290,16 @@ class _PowerCard extends StatelessWidget {
   }
 
   String _statusLine(int total, int active, bool running) {
+    TransportStatus transportStatus = controller.transport.status;
+    if (transportStatus.state == TransportState.starting) {
+      return 'Starting the system tunnel…';
+    }
+    if (transportStatus.state == TransportState.stopping) {
+      return 'Stopping the system tunnel…';
+    }
+    if (transportStatus.state == TransportState.failed) {
+      return 'Start failed. The reason is shown below.';
+    }
     // Auto-adopt now fills the list for the user, so the "you need to
     // add a network" copy from the manual-flow era is no longer
     // accurate. We instead describe what Dispatch is currently doing
@@ -277,7 +313,7 @@ class _PowerCard extends StatelessWidget {
           : '$total networks available. Tap to combine.';
     }
     if (active == 0) {
-      return 'On — waiting for the first network to carry traffic…';
+      return 'On — waiting for a network with working internet';
     }
     if (active == 1) {
       // With only one link actually moving bytes we can't truly
@@ -288,23 +324,41 @@ class _PowerCard extends StatelessWidget {
     }
     return 'On — auto-combining $active networks';
   }
+
+  String _powerTitle(int active, TransportStatus status) {
+    if (status.state == TransportState.starting) return 'Starting';
+    if (status.state == TransportState.stopping) return 'Stopping';
+    if (status.state == TransportState.failed) return 'Needs attention';
+    if (!status.isRunning) return 'Off';
+    if (active == 0) return 'Waiting';
+    return 'On';
+  }
 }
 
 /// The fat round power button on the left of [_PowerCard].
 class _PowerButton extends StatelessWidget {
   final bool running;
+  final bool busy;
   final VoidCallback? onPressed;
 
-  const _PowerButton({required this.running, required this.onPressed});
+  const _PowerButton({
+    required this.running,
+    required this.busy,
+    required this.onPressed,
+  });
 
   @override
   Widget build(BuildContext context) {
-    Color fill = running ? DispatchColors.ok : DispatchColors.panel;
-    Color border = running ? DispatchColors.ok : DispatchColors.border;
-    Color icon = running ? Colors.white : DispatchColors.muted;
+    Color fill = running || busy ? DispatchColors.ok : DispatchColors.panel;
+    Color border = running || busy ? DispatchColors.ok : DispatchColors.border;
+    Color icon = running || busy ? Colors.white : DispatchColors.muted;
     bool enabled = onPressed != null;
+    String semanticLabel = running ? 'Disconnect' : 'Connect';
+    if (busy) {
+      semanticLabel = 'Connecting';
+    }
     return Semantics(
-      label: running ? 'Disconnect' : 'Connect',
+      label: semanticLabel,
       button: true,
       enabled: enabled,
       child: Material(
@@ -539,6 +593,18 @@ class _Banners extends StatelessWidget {
       );
     }
 
+    _TetherIssue? tetherIssue = _findTetherIssue(controller);
+    if (tetherIssue != null) {
+      banners.add(
+        _SoftBanner(
+          color: DispatchColors.warn,
+          icon: tetherIssue.icon,
+          title: tetherIssue.title,
+          body: tetherIssue.body,
+        ),
+      );
+    }
+
     if (banners.isEmpty) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
@@ -550,6 +616,87 @@ class _Banners extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  static _TetherIssue? _findTetherIssue(DispatchController controller) {
+    Map<String, Link> linksByBsd = <String, Link>{};
+    for (Link link in controller.settings.policy.links) {
+      String? bsd = link.interfaceName?.toLowerCase();
+      if (bsd != null && bsd.isNotEmpty) {
+        linksByBsd[bsd] = link;
+      }
+    }
+
+    for (KnownNetworkService service in controller.namingService.services) {
+      if (!_isTetherKind(service.kind)) {
+        continue;
+      }
+      if (!service.isCurrentlyAvailable || service.disabled) {
+        continue;
+      }
+      String? bsd = service.bsdName?.toLowerCase();
+      Link? link = bsd == null ? null : linksByBsd[bsd];
+      if (link == null) {
+        return _TetherIssue.forService(service, hasLink: false);
+      }
+      CaptivePortalProbeResult? captive = controller.captiveStates[link.id];
+      LinkStatus? status = controller.lastHealthEvent?.statuses[link.id];
+      bool badProbe =
+          captive == CaptivePortalProbeResult.error ||
+          captive == CaptivePortalProbeResult.captive;
+      bool badHealth = status == LinkStatus.unhealthy;
+      if (badProbe || badHealth) {
+        return _TetherIssue.forService(service, hasLink: true);
+      }
+    }
+    return null;
+  }
+
+  static bool _isTetherKind(NamedInterfaceKind kind) {
+    return kind == NamedInterfaceKind.cellularTether ||
+        kind == NamedInterfaceKind.bluetoothTether;
+  }
+}
+
+class _TetherIssue {
+  final IconData icon;
+  final String title;
+  final String body;
+
+  const _TetherIssue({
+    required this.icon,
+    required this.title,
+    required this.body,
+  });
+
+  factory _TetherIssue.forService(
+    KnownNetworkService service, {
+    required bool hasLink,
+  }) {
+    bool cellular = service.kind == NamedInterfaceKind.cellularTether;
+    return _TetherIssue(
+      icon: cellular ? Icons.smartphone_rounded : Icons.bluetooth_rounded,
+      title: cellular
+          ? 'iPhone tether is plugged in, but not online'
+          : 'Bluetooth tether is connected, but not online',
+      body: cellular
+          ? _cellularBody(service, hasLink)
+          : _bluetoothBody(service, hasLink),
+    );
+  }
+
+  static String _cellularBody(KnownNetworkService service, bool hasLink) {
+    String prefix = hasLink
+        ? '${service.displayName} exists, but the internet probe failed.'
+        : '${service.displayName} is visible to macOS, but it has no usable IP address yet.';
+    return '$prefix On the iPhone: unlock it, tap Trust if asked, then open Settings > Personal Hotspot and turn Allow Others to Join on.';
+  }
+
+  static String _bluetoothBody(KnownNetworkService service, bool hasLink) {
+    String prefix = hasLink
+        ? '${service.displayName} exists, but the internet probe failed.'
+        : '${service.displayName} is visible to macOS, but it has no usable IP address yet.';
+    return '$prefix Turn on internet sharing or Personal Hotspot on the phone.';
   }
 }
 
@@ -637,688 +784,391 @@ class _SoftBanner extends StatelessWidget {
 // view. The DispatchController's `_autoAdoptInterfaces` keeps the
 // adopted-link list in lockstep with what the OS reports.
 
-// ─────────────────────────────────────────────────────────────────────────
-//  Hub-and-spoke bond graphic
-// ─────────────────────────────────────────────────────────────────────────
-//
-// The eye-catching hero at the top of the Networks tab. It shows the
-// Mac at the center with one spoke per known network radiating outward,
-// each spoke colored by health and animated when traffic is flowing.
-//
-// Why a custom paint instead of a Stack of Containers:
-//   * One animation controller drives every spoke's flow particles —
-//     much cheaper than per-spoke `AnimatedBuilder`s and avoids the
-//     widget tree churn that breaks AccessibilityBridge on macOS.
-//   * Exact geometry (cos/sin endpoints, angled labels) is way easier
-//     in a painter than in Flex/Stack arithmetic.
-//   * Endpoints fall on a perfect circle regardless of the parent
-//     constraints, so the layout reads as "the Mac talking to N
-//     networks" instead of an arbitrary grid.
-
-/// Snapshot of what one spoke should look like in [_BondGraphic].
-/// Built fresh on every controller change — these are immutable view
-/// models, not long-lived state.
-class _SpokeSpec {
-  /// Friendly display name (`Wi-Fi — Hometown`, `iPhone USB`, …).
+class _NetworkSummarySpec {
   final String name;
-
-  /// Glyph for the endpoint circle.
   final IconData icon;
+  final _NetworkSummaryHealth health;
+  final double bps;
 
-  /// Overall health bucket. Drives spoke color, endpoint fill, and
-  /// whether flow dots are drawn.
-  final _SpokeHealth health;
-
-  /// 0…1 intensity used to scale the flow animation: higher = more,
-  /// brighter particles. We clamp at 50 Mbps so a single fast link
-  /// doesn't drown out the others visually.
-  final double trafficIntensity;
-
-  /// True when the link is moving inbound traffic right now. Drives the
-  /// download-direction (toward-hub) particle flow.
-  final bool downloading;
-
-  /// True when the link is moving outbound traffic right now. Drives the
-  /// upload-direction (away-from-hub) particle flow.
-  final bool uploading;
-
-  const _SpokeSpec({
+  const _NetworkSummarySpec({
     required this.name,
     required this.icon,
     required this.health,
-    required this.trafficIntensity,
-    required this.downloading,
-    required this.uploading,
+    required this.bps,
   });
 }
 
-/// Health buckets for [_SpokeSpec.health]. Order matches drawing
-/// priority — `active` spokes paint last so they sit on top.
-enum _SpokeHealth {
-  /// Healthy and currently carrying traffic. Green.
-  active,
+enum _NetworkSummaryHealth { active, ready, problem, blocked, offline, pending }
 
-  /// Healthy and reachable but not the one moving bytes right now.
-  /// Green-dim (no flow particles).
-  standby,
-
-  /// Configured but the OS hardware port isn't up (cable unplugged,
-  /// Wi-Fi off, hotspot lost). Grey-dashed.
-  disconnected,
-
-  /// The link is reachable but has no internet / failed captive portal
-  /// / failing the supervisor probe. Red — the user can see at a glance
-  /// which one to fix.
-  broken,
-
-  /// User explicitly turned this network off (priority = never). Grey,
-  /// no flow.
-  off,
-
-  /// We don't have enough info yet (supervisor hasn't reported). Soft
-  /// grey, no flow.
-  unknown,
-}
-
-/// Live hub-and-spoke visualization of every network Dispatch knows
-/// about. Designed to live at the top of [_NetworksPage] so the user
-/// always has an at-a-glance "what's connected, what's broken, what's
-/// flowing" view.
-class _BondGraphic extends StatefulWidget {
+class _BondGraphic extends StatelessWidget {
   final DispatchController controller;
+
   const _BondGraphic({required this.controller});
 
   @override
-  State<_BondGraphic> createState() => _BondGraphicState();
-}
-
-class _BondGraphicState extends State<_BondGraphic>
-    with SingleTickerProviderStateMixin {
-  /// One repeating controller drives the flow-particle animation for
-  /// every spoke. 2.4 s per cycle reads as "purposeful flow" without
-  /// being distracting.
-  ///
-  /// Constructed eagerly in [initState] (not via a `late final`
-  /// initializer) so it always exists during the active lifecycle. If
-  /// it were lazy, a parent that rebuilt this widget and then tore it
-  /// down before `build()` ever ran would trigger the initializer
-  /// inside `dispose()` — and an `AnimationController` requires an
-  /// ancestor `TickerMode` lookup, which throws once the element is
-  /// deactivated.
-  late final AnimationController _flow;
-
-  @override
-  void initState() {
-    super.initState();
-    _flow = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 2400),
-    )..repeat();
-  }
-
-  @override
-  void dispose() {
-    _flow.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    List<_SpokeSpec> spokes = _buildSpokes(widget.controller);
-    if (spokes.isEmpty) {
-      // No networks at all — show a friendly placeholder instead of an
-      // empty circle. Same height so the layout doesn't jump as
-      // services arrive.
-      return SizedBox(
-        height: 220,
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: const <Widget>[
-              Icon(
-                Icons.travel_explore_rounded,
-                size: 40,
-                color: DispatchColors.muted,
-              ),
-              SizedBox(height: 8),
-              Text(
-                'Looking for networks…',
-                style: TextStyle(
-                  color: DispatchColors.muted,
-                  fontWeight: FontWeight.w600,
+    List<_NetworkSummarySpec> summaries = _buildSummaries(controller);
+    double totalBps = _totalBps(controller);
+    int active = 0;
+    int problem = 0;
+    int blocked = 0;
+    for (_NetworkSummarySpec summary in summaries) {
+      if (summary.health == _NetworkSummaryHealth.active) active++;
+      if (summary.health == _NetworkSummaryHealth.problem) problem++;
+      if (summary.health == _NetworkSummaryHealth.blocked) blocked++;
+    }
+    String endpoint =
+        controller.settings.policy.serverUrl ??
+        DispatchSettings.defaultRelayUrl;
+    String relayHelp = _relayHelpText(controller, active);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        color: DispatchColors.panel,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: DispatchColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: DispatchColors.accent.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(
+                  Icons.cloud_sync_rounded,
+                  color: DispatchColors.accent,
+                  size: 19,
                 ),
               ),
-              SizedBox(height: 4),
-              Text(
-                'Connect Wi-Fi, plug in Ethernet, or enable tethering.',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: DispatchColors.muted, fontSize: 11),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Row(
+                      children: <Widget>[
+                        const Text(
+                          'SLC relay',
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        DispatchBadge(
+                          label: _relayBadgeLabel(controller, active),
+                          color: _relayBadgeColor(controller, active),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      endpoint,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: DispatchColors.muted,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      relayHelp,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: DispatchColors.muted,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              _MiniStat(
+                label: 'Live',
+                value: controller.isRunning ? _friendlyBps(totalBps) : 'Off',
+                color: controller.isRunning
+                    ? DispatchColors.ok
+                    : DispatchColors.muted,
               ),
             ],
           ),
-        ),
-      );
-    }
-    bool running = widget.controller.isRunning;
-    // Total bps across every link — drives the center data/s readout.
-    // We sum bpsIn + bpsOut so the hub shows aggregate device
-    // throughput, matching how Speedify's headline number reads. NaN
-    // / negative samples coerce to 0 to keep the formatter happy.
-    double totalBps = 0;
-    for (Link link in widget.controller.settings.policy.links) {
-      LinkMetric? m = widget.controller.linkMetrics[link.id];
-      if (m == null) continue;
-      double inV = (m.bpsIn ?? 0);
-      double outV = (m.bpsOut ?? 0);
-      if (inV.isFinite && inV > 0) totalBps += inV;
-      if (outV.isFinite && outV > 0) totalBps += outV;
-    }
-    return SizedBox(
-      height: 240,
-      // The painter repaints on every animation tick (~60Hz). Each
-      // repaint can produce a fresh accessibility-tree node, which on
-      // macOS causes "Failed to update ui::AXTree: Nodes left pending"
-      // errors when the engine flushes mid-paint. Mark this widget as
-      // a single semantic node — the per-network cards below convey
-      // the same information for assistive tech, so the graphic is
-      // purely decorative.
-      child: ExcludeSemantics(
-        child: AnimatedBuilder(
-          animation: _flow,
-          builder: (BuildContext _, Widget? _) {
-            return CustomPaint(
-              painter: _BondPainter(
-                spokes: spokes,
-                t: _flow.value,
-                running: running,
-                totalBps: totalBps,
-                textDirection: Directionality.of(context),
+          const SizedBox(height: 12),
+          Row(
+            children: <Widget>[
+              Expanded(
+                child: _MiniStat(
+                  label: 'Active',
+                  value: '$active',
+                  color: active > 0 ? DispatchColors.ok : DispatchColors.muted,
+                ),
               ),
-              child: const SizedBox.expand(),
-            );
-          },
-        ),
+              Expanded(
+                child: _MiniStat(
+                  label: 'Issues',
+                  value: '$problem',
+                  color: problem > 0
+                      ? DispatchColors.danger
+                      : DispatchColors.muted,
+                ),
+              ),
+              Expanded(
+                child: _MiniStat(
+                  label: 'Blocked',
+                  value: '$blocked',
+                  color: blocked > 0
+                      ? DispatchColors.warn
+                      : DispatchColors.muted,
+                ),
+              ),
+            ],
+          ),
+          if (summaries.isNotEmpty) ...<Widget>[
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: <Widget>[
+                for (_NetworkSummarySpec summary in summaries.take(4))
+                  _NetworkSummaryChip(summary: summary),
+                if (summaries.length > 4)
+                  _MoreNetworksChip(count: summaries.length - 4),
+              ],
+            ),
+          ] else ...<Widget>[
+            const SizedBox(height: 10),
+            const Text(
+              'Waiting for Wi-Fi, Ethernet, or tethered internet.',
+              style: TextStyle(
+                fontSize: 12,
+                color: DispatchColors.muted,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
 
-  /// Build a spoke spec for every adopted [Link] in priority order.
-  /// We deliberately include `LinkPriority.never` so the user can see
-  /// the networks they've blocked sitting on the wheel (greyed out),
-  /// confirming the blacklist is honored.
-  List<_SpokeSpec> _buildSpokes(DispatchController c) {
+  static List<_NetworkSummarySpec> _buildSummaries(DispatchController c) {
     Map<String, NamedInterface> names = c.namingService.byBsd;
     Map<String, String> ipToBsd = _buildIpToBsd(c.interfaces);
-    List<_SpokeSpec> out = <_SpokeSpec>[];
+    List<_NetworkSummarySpec> out = <_NetworkSummarySpec>[];
     for (Link link in c.settings.policy.links) {
-      LinkMetric? m = c.linkMetrics[link.id];
-      LinkStatus? sup = c.lastHealthEvent?.statuses[link.id];
-      CaptivePortalProbeResult? cap = c.captiveStates[link.id];
+      LinkMetric? metric = c.linkMetrics[link.id];
+      LinkStatus? status = c.lastHealthEvent?.statuses[link.id];
+      CaptivePortalProbeResult? captive = c.captiveStates[link.id];
       bool present = _isInterfacePresent(link, c);
-      double bpsIn = m?.bpsIn ?? 0;
-      double bpsOut = m?.bpsOut ?? 0;
-      double bps = bpsIn + bpsOut;
-      // 1.0 == "this link alone is pushing 50 Mbps" — enough that the
-      // flow particles look saturated without making smaller links
-      // invisible.
-      double intensity = (bps / 50e6).clamp(0.0, 1.0);
-      _SpokeHealth health = _classifyHealth(
-        link: link,
-        supervisorStatus: sup,
-        captiveState: cap,
-        interfacePresent: present,
-        carrying: bps > 0,
-      );
+      double bps = (metric?.bpsIn ?? 0) + (metric?.bpsOut ?? 0);
       out.add(
-        _SpokeSpec(
+        _NetworkSummarySpec(
           name: _friendlyLinkName(link, names, ipToBsd: ipToBsd),
           icon: _iconForLinkName(link, names, ipToBsd: ipToBsd),
-          health: health,
-          trafficIntensity: intensity,
-          downloading: bpsIn > 0,
-          uploading: bpsOut > 0,
+          health: _healthFor(
+            link: link,
+            status: status,
+            captive: captive,
+            present: present,
+            carrying: bps > 0,
+          ),
+          bps: bps,
         ),
       );
     }
     return out;
   }
 
-  /// Translate the raw probe / supervisor signals into one of the
-  /// six [_SpokeHealth] buckets the painter understands. Mirrors the
-  /// `_statusLineFor` state machine that drives the per-card text so
-  /// the graphic and the cards always agree.
-  static _SpokeHealth _classifyHealth({
+  static _NetworkSummaryHealth _healthFor({
     required Link link,
-    required LinkStatus? supervisorStatus,
-    required CaptivePortalProbeResult? captiveState,
-    required bool interfacePresent,
+    required LinkStatus? status,
+    required CaptivePortalProbeResult? captive,
+    required bool present,
     required bool carrying,
   }) {
-    if (link.priority == LinkPriority.never) return _SpokeHealth.off;
-    if (!interfacePresent) {
-      return _SpokeHealth.disconnected;
+    if (link.priority == LinkPriority.never) {
+      return _NetworkSummaryHealth.blocked;
     }
-    // A captive portal (`captive`) or a link that's connected but can't
-    // reach the open internet (`error`) is broken from the user's POV —
-    // even if the L3 probe to 1.1.1.1 reports good RTT/loss, the link
-    // can't carry useful traffic. Mapping both to `_SpokeHealth.broken`
-    // makes the graphic match reality ("Hometown Wi-Fi is connected
-    // but has no internet").
-    if (captiveState == CaptivePortalProbeResult.captive ||
-        captiveState == CaptivePortalProbeResult.error) {
-      return _SpokeHealth.broken;
+    if (!present) return _NetworkSummaryHealth.offline;
+    if (captive == CaptivePortalProbeResult.captive ||
+        captive == CaptivePortalProbeResult.error ||
+        status == LinkStatus.unhealthy) {
+      return _NetworkSummaryHealth.problem;
     }
-    switch (supervisorStatus) {
-      case LinkStatus.healthy:
-        return carrying ? _SpokeHealth.active : _SpokeHealth.standby;
-      case LinkStatus.degraded:
-        return _SpokeHealth.standby;
-      case LinkStatus.unhealthy:
-        return _SpokeHealth.broken;
-      case LinkStatus.disabled:
-        return _SpokeHealth.off;
-      case LinkStatus.unknown:
-      case null:
-        return _SpokeHealth.unknown;
+    if (carrying) return _NetworkSummaryHealth.active;
+    if (status == LinkStatus.healthy || status == LinkStatus.degraded) {
+      return _NetworkSummaryHealth.ready;
     }
+    return _NetworkSummaryHealth.pending;
+  }
+
+  static double _totalBps(DispatchController c) {
+    double total = 0;
+    for (Link link in c.settings.policy.links) {
+      LinkMetric? metric = c.linkMetrics[link.id];
+      double inbound = metric?.bpsIn ?? 0;
+      double outbound = metric?.bpsOut ?? 0;
+      if (inbound.isFinite && inbound > 0) total += inbound;
+      if (outbound.isFinite && outbound > 0) total += outbound;
+    }
+    return total;
+  }
+
+  static String _relayBadgeLabel(DispatchController c, int active) {
+    if (!c.isRunning) return 'Ready';
+    if (active == 0) return 'Waiting';
+    return 'Routing';
+  }
+
+  static String _relayHelpText(DispatchController c, int active) {
+    if (c.transportKind != TransportKind.tunnel) {
+      return 'Per-app proxy mode is active.';
+    }
+    if (c.isRunning && active == 0) {
+      return 'Reachable relay is not enough. Server egress must show tun:true.';
+    }
+    return 'System internet requires relay TUN/NAT on the server.';
+  }
+
+  static Color _relayBadgeColor(DispatchController c, int active) {
+    if (!c.isRunning) return DispatchColors.muted;
+    if (active == 0) return DispatchColors.warn;
+    return DispatchColors.ok;
   }
 }
 
-/// Custom painter for [_BondGraphic]. Draws the central hub, every
-/// spoke line, the endpoint badges, the labels, and the flowing
-/// particles for active spokes — all driven by a single animation
-/// controller via [t].
-class _BondPainter extends CustomPainter {
-  final List<_SpokeSpec> spokes;
-  final double t; // 0..1, repeats every cycle
-  final bool running;
-  final double totalBps;
-  final TextDirection textDirection;
+class _MiniStat extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color color;
 
-  _BondPainter({
-    required this.spokes,
-    required this.t,
-    required this.running,
-    required this.totalBps,
-    required this.textDirection,
+  const _MiniStat({
+    required this.label,
+    required this.value,
+    required this.color,
   });
 
   @override
-  void paint(Canvas canvas, Size size) {
-    Offset center = Offset(size.width / 2, size.height / 2 - 4);
-    // Leave room around the rim for labels.
-    double maxR = math.min(size.width, size.height) / 2 - 48;
-    double endpointR = 18;
-    double hubR = 24;
-
-    int n = spokes.length;
-    for (int i = 0; i < n; i++) {
-      // Start at top (-90°), distribute evenly clockwise.
-      double angle = -math.pi / 2 + (2 * math.pi * i / n);
-      Offset endpoint =
-          center + Offset(math.cos(angle), math.sin(angle)) * maxR;
-      _SpokeSpec spoke = spokes[i];
-      Color spokeColor = _colorFor(spoke.health);
-
-      _drawSpoke(canvas, center, endpoint, spoke, spokeColor);
-      _drawFlowParticles(canvas, center, endpoint, spoke, spokeColor);
-      _drawEndpoint(canvas, endpoint, endpointR, spoke, spokeColor);
-      _drawLabel(canvas, center, endpoint, endpointR, spoke);
-    }
-
-    _drawHub(canvas, center, hubR);
-  }
-
-  void _drawSpoke(
-    Canvas canvas,
-    Offset center,
-    Offset endpoint,
-    _SpokeSpec spoke,
-    Color color,
-  ) {
-    Paint paint = Paint()
-      ..strokeWidth = 2
-      ..style = PaintingStyle.stroke;
-    // Disconnected / off / broken: dashed line for "not flowing".
-    bool dashed =
-        spoke.health == _SpokeHealth.disconnected ||
-        spoke.health == _SpokeHealth.off ||
-        spoke.health == _SpokeHealth.unknown;
-    if (dashed) {
-      paint.color = color.withValues(alpha: 0.35);
-      _drawDashedLine(canvas, center, endpoint, paint, 6, 5);
-    } else {
-      paint.color = color.withValues(alpha: 0.45);
-      canvas.drawLine(center, endpoint, paint);
-    }
-  }
-
-  /// Particles traveling along the spoke. Two flow regimes:
-  ///   * **Idle pulse** — when the link is healthy/active but no
-  ///     traffic is moving right now, we still send a single soft
-  ///     particle down the wire so the user can tell the tether is
-  ///     alive. Speedify does the same — a 'breathing' indicator that
-  ///     reads as 'wired up, ready'.
-  ///   * **Loaded stream** — when there *is* throughput, particle
-  ///     count, brightness, radius, and trail glow all scale with
-  ///     [_SpokeSpec.trafficIntensity] so the visual codes "this is
-  ///     where the bytes are coming from".
-  /// Direction: download goes endpoint→hub, upload goes hub→endpoint.
-  /// Bidirectional spokes alternate particle phases so you can see
-  /// both directions on the same wire.
-  void _drawFlowParticles(
-    Canvas canvas,
-    Offset center,
-    Offset endpoint,
-    _SpokeSpec spoke,
-    Color color,
-  ) {
-    if (!running) return;
-    // Idle pulse only applies to healthy spokes — broken/off/unknown
-    // stay quiet.
-    bool eligible =
-        spoke.health == _SpokeHealth.active ||
-        spoke.health == _SpokeHealth.standby;
-    if (!eligible) return;
-
-    bool loaded = spoke.downloading || spoke.uploading;
-    int particles = loaded ? (3 + (spoke.trafficIntensity * 5)).round() : 1;
-    Paint paint = Paint()..color = color;
-    for (int p = 0; p < particles; p++) {
-      double phase = (t + p / particles) % 1.0;
-      // Direction:
-      //   * idle pulse: always endpoint→hub (so the user reads "data
-      //     coming in")
-      //   * download-only: endpoint→hub
-      //   * upload-only: hub→endpoint
-      //   * bidirectional: alternate per particle
-      bool reverse;
-      if (!loaded) {
-        reverse = false;
-      } else if (spoke.uploading && !spoke.downloading) {
-        reverse = true;
-      } else if (spoke.downloading && !spoke.uploading) {
-        reverse = false;
-      } else {
-        reverse = p.isEven;
-      }
-      double frac = reverse ? phase : (1.0 - phase);
-      Offset pos = Offset.lerp(center, endpoint, frac)!;
-      // Bigger, brighter dots when traffic is real.
-      double radius = loaded ? (3.0 + spoke.trafficIntensity * 2.4) : 2.0;
-      // Sin-shaped fade so particles ease into/out of the endpoints.
-      double alphaT = math.sin(frac * math.pi).clamp(0.0, 1.0);
-      double baseAlpha = loaded ? 0.65 : 0.30;
-      double topAlpha = loaded ? 0.95 : 0.55;
-      // Glow halo behind loaded particles — gives the 'data stream'
-      // virtual feel without needing per-frame shader work.
-      if (loaded) {
-        Paint halo = Paint()
-          ..color = color.withValues(alpha: 0.18 + 0.18 * alphaT)
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
-        canvas.drawCircle(pos, radius + 2.2, halo);
-      }
-      paint.color = color.withValues(
-        alpha: baseAlpha + (topAlpha - baseAlpha) * alphaT,
-      );
-      canvas.drawCircle(pos, radius, paint);
-    }
-  }
-
-  void _drawEndpoint(
-    Canvas canvas,
-    Offset endpoint,
-    double radius,
-    _SpokeSpec spoke,
-    Color color,
-  ) {
-    Paint fill = Paint()..color = _surfaceFor(spoke.health);
-    Paint border = Paint()
-      ..color = color
-      ..strokeWidth = 1.6
-      ..style = PaintingStyle.stroke;
-    canvas.drawCircle(endpoint, radius, fill);
-    canvas.drawCircle(endpoint, radius, border);
-    // Glow for active spokes — telegraphs "this one's working."
-    if (spoke.health == _SpokeHealth.active) {
-      Paint glow = Paint()
-        ..color = color.withValues(alpha: 0.18)
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
-      canvas.drawCircle(endpoint, radius + 3, glow);
-    }
-    // Icon inside the badge.
-    TextPainter tp = TextPainter(
-      textDirection: textDirection,
-      text: TextSpan(
-        text: String.fromCharCode(spoke.icon.codePoint),
-        style: TextStyle(
-          fontFamily: spoke.icon.fontFamily,
-          package: spoke.icon.fontPackage,
-          fontSize: 18,
-          color:
-              spoke.health == _SpokeHealth.off ||
-                  spoke.health == _SpokeHealth.unknown
-              ? DispatchColors.muted
-              : color,
-        ),
-      ),
-    )..layout();
-    tp.paint(canvas, endpoint - Offset(tp.width / 2, tp.height / 2));
-  }
-
-  void _drawHub(Canvas canvas, Offset center, double radius) {
-    // Hub fill: green when at least one spoke is active and we're
-    // running, neutral panel otherwise.
-    bool anyActive =
-        running &&
-        spokes.any((_SpokeSpec s) => s.health == _SpokeHealth.active);
-    Color fill = anyActive ? DispatchColors.ok : DispatchColors.panel;
-    Color stroke = anyActive ? DispatchColors.ok : DispatchColors.border;
-    Paint p = Paint()..color = fill;
-    Paint border = Paint()
-      ..color = stroke
-      ..strokeWidth = 2.2
-      ..style = PaintingStyle.stroke;
-    canvas.drawCircle(center, radius, p);
-    canvas.drawCircle(center, radius, border);
-    // Subtle ring when running, for "alive" affordance.
-    if (anyActive) {
-      Paint ring = Paint()
-        ..color = DispatchColors.ok.withValues(alpha: 0.18)
-        ..strokeWidth = 4
-        ..style = PaintingStyle.stroke;
-      canvas.drawCircle(center, radius + 4, ring);
-    }
-    // Mac glyph at the very top of the hub. We make room for the
-    // data/s readout *below* the glyph (within the hub circle) when
-    // running, otherwise the glyph centers like before.
-    IconData icon = anyActive
-        ? Icons.laptop_mac_rounded
-        : Icons.laptop_mac_outlined;
-    bool showRate = running;
-    double iconYOffset = showRate ? -8 : 0; // shift glyph up if rate shown
-    TextPainter tp = TextPainter(
-      textDirection: textDirection,
-      text: TextSpan(
-        text: String.fromCharCode(icon.codePoint),
-        style: TextStyle(
-          fontFamily: icon.fontFamily,
-          package: icon.fontPackage,
-          fontSize: showRate ? 18 : 24,
-          color: anyActive ? Colors.white : DispatchColors.muted,
-        ),
-      ),
-    )..layout();
-    tp.paint(
-      canvas,
-      Offset(center.dx - tp.width / 2, center.dy + iconYOffset - tp.height / 2),
-    );
-
-    // Total data/s readout — sits below the laptop glyph inside the
-    // hub circle so the user always sees "the device is currently
-    // moving X right now" without flicking to another tab. Hidden
-    // when the tunnel isn't running because the number would be
-    // misleadingly zero.
-    if (showRate) {
-      String text = _formatRate(totalBps);
-      Color textColor = anyActive ? Colors.white : DispatchColors.muted;
-      TextPainter rate = TextPainter(
-        textDirection: textDirection,
-        textAlign: TextAlign.center,
-        text: TextSpan(
-          text: text,
-          style: TextStyle(
-            fontSize: 11,
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 10,
+            color: DispatchColors.muted,
             fontWeight: FontWeight.w700,
-            color: textColor,
           ),
         ),
-      )..layout();
-      rate.paint(canvas, Offset(center.dx - rate.width / 2, center.dy + 4));
-    }
-  }
-
-  /// Format bytes/sec into a compact 'X.X Mb/s' / 'X.X Kb/s' string for
-  /// the hub readout. Uses bits (Speedify-style) — most users read
-  /// network throughput in bits, not bytes. Range:
-  ///   * <  1 Kb/s   : '0 b/s'   (avoid the 'now' flicker on idle)
-  ///   * <  1 Mb/s   : 'XXX Kb/s'
-  ///   * <  1 Gb/s   : 'XX.X Mb/s'
-  ///   * >= 1 Gb/s   : 'X.XX Gb/s'
-  String _formatRate(double bps) {
-    double bits = bps * 8;
-    if (bits < 1e3) return '0 b/s';
-    if (bits < 1e6) return '${(bits / 1e3).toStringAsFixed(0)} Kb/s';
-    if (bits < 1e9) return '${(bits / 1e6).toStringAsFixed(1)} Mb/s';
-    return '${(bits / 1e9).toStringAsFixed(2)} Gb/s';
-  }
-
-  /// Label sits just outside the endpoint, on the same side as the
-  /// endpoint relative to the hub (above for top spokes, below for
-  /// bottom spokes, etc.). Truncates long names so adjacent labels
-  /// don't visually collide.
-  void _drawLabel(
-    Canvas canvas,
-    Offset center,
-    Offset endpoint,
-    double endpointRadius,
-    _SpokeSpec spoke,
-  ) {
-    // Pick where the label sits relative to the endpoint based on which
-    // quadrant the spoke is in. Top-half spokes get labels above their
-    // endpoint, bottom-half below.
-    bool above = endpoint.dy < center.dy;
-    String shown = spoke.name.length > 22
-        ? '${spoke.name.substring(0, 21)}…'
-        : spoke.name;
-    Color color =
-        spoke.health == _SpokeHealth.off || spoke.health == _SpokeHealth.unknown
-        ? DispatchColors.muted
-        : DispatchColors.ink;
-    TextPainter tp = TextPainter(
-      textDirection: textDirection,
-      textAlign: TextAlign.center,
-      maxLines: 1,
-      ellipsis: '…',
-      text: TextSpan(
-        text: shown,
-        style: TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.w700,
-          color: color,
+        const SizedBox(height: 2),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 14,
+            color: color,
+            fontWeight: FontWeight.w800,
+          ),
+          overflow: TextOverflow.ellipsis,
         ),
-      ),
-    )..layout(maxWidth: 110);
-    Offset labelPos;
-    if (above) {
-      labelPos = Offset(
-        endpoint.dx - tp.width / 2,
-        endpoint.dy - endpointRadius - 2 - tp.height,
-      );
-    } else {
-      labelPos = Offset(
-        endpoint.dx - tp.width / 2,
-        endpoint.dy + endpointRadius + 2,
-      );
-    }
-    tp.paint(canvas, labelPos);
+      ],
+    );
   }
+}
 
-  void _drawDashedLine(
-    Canvas canvas,
-    Offset a,
-    Offset b,
-    Paint paint,
-    double dashLen,
-    double gap,
-  ) {
-    double dx = b.dx - a.dx;
-    double dy = b.dy - a.dy;
-    double len = math.sqrt(dx * dx + dy * dy);
-    if (len == 0) return;
-    double ux = dx / len;
-    double uy = dy / len;
-    double pos = 0;
-    while (pos < len) {
-      double end = math.min(pos + dashLen, len);
-      Offset p1 = Offset(a.dx + ux * pos, a.dy + uy * pos);
-      Offset p2 = Offset(a.dx + ux * end, a.dy + uy * end);
-      canvas.drawLine(p1, p2, paint);
-      pos = end + gap;
-    }
-  }
+class _NetworkSummaryChip extends StatelessWidget {
+  final _NetworkSummarySpec summary;
 
-  Color _colorFor(_SpokeHealth h) {
-    switch (h) {
-      case _SpokeHealth.active:
-        return DispatchColors.ok;
-      case _SpokeHealth.standby:
-        return DispatchColors.ok;
-      case _SpokeHealth.broken:
-        return DispatchColors.danger;
-      case _SpokeHealth.disconnected:
-      case _SpokeHealth.off:
-      case _SpokeHealth.unknown:
-        return DispatchColors.muted;
-    }
-  }
-
-  /// Endpoint disc fill: a slightly translucent version of the panel
-  /// color so the icon sits on a contrast plate even on darker
-  /// backgrounds.
-  Color _surfaceFor(_SpokeHealth h) {
-    if (h == _SpokeHealth.active) {
-      return DispatchColors.ok.withValues(alpha: 0.18);
-    }
-    if (h == _SpokeHealth.broken) {
-      return DispatchColors.danger.withValues(alpha: 0.12);
-    }
-    return DispatchColors.surface;
-  }
+  const _NetworkSummaryChip({required this.summary});
 
   @override
-  bool shouldRepaint(covariant _BondPainter old) {
-    return old.t != t ||
-        old.running != running ||
-        (old.totalBps - totalBps).abs() > 1e4 || // ~10 Kb/s sensitivity
-        old.spokes.length != spokes.length ||
-        !_specListEqual(old.spokes, spokes);
+  Widget build(BuildContext context) {
+    Color color = _healthColor(summary.health);
+    return Container(
+      padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.24)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          Icon(summary.icon, size: 14, color: color),
+          const SizedBox(width: 6),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 120),
+            child: Text(
+              summary.name,
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            _chipValue(summary),
+            style: TextStyle(
+              fontSize: 11,
+              color: color,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
-  static bool _specListEqual(List<_SpokeSpec> a, List<_SpokeSpec> b) {
-    if (a.length != b.length) return false;
-    for (int i = 0; i < a.length; i++) {
-      _SpokeSpec x = a[i];
-      _SpokeSpec y = b[i];
-      if (x.name != y.name ||
-          x.health != y.health ||
-          x.downloading != y.downloading ||
-          x.uploading != y.uploading ||
-          (x.trafficIntensity - y.trafficIntensity).abs() > 0.05) {
-        return false;
-      }
+  static String _chipValue(_NetworkSummarySpec summary) {
+    if (summary.health == _NetworkSummaryHealth.active) {
+      return _friendlyBps(summary.bps);
     }
-    return true;
+    if (summary.health == _NetworkSummaryHealth.ready) return 'Ready';
+    if (summary.health == _NetworkSummaryHealth.problem) return 'Issue';
+    if (summary.health == _NetworkSummaryHealth.blocked) return 'Blocked';
+    if (summary.health == _NetworkSummaryHealth.offline) return 'Offline';
+    return 'Checking';
+  }
+
+  static Color _healthColor(_NetworkSummaryHealth health) {
+    if (health == _NetworkSummaryHealth.active) return DispatchColors.ok;
+    if (health == _NetworkSummaryHealth.ready) return DispatchColors.ok;
+    if (health == _NetworkSummaryHealth.problem) return DispatchColors.danger;
+    if (health == _NetworkSummaryHealth.blocked) return DispatchColors.warn;
+    return DispatchColors.muted;
+  }
+}
+
+class _MoreNetworksChip extends StatelessWidget {
+  final int count;
+
+  const _MoreNetworksChip({required this.count});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+      decoration: BoxDecoration(
+        color: DispatchColors.surface,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: DispatchColors.border),
+      ),
+      child: Text(
+        '+$count more',
+        style: const TextStyle(
+          fontSize: 12,
+          color: DispatchColors.muted,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
   }
 }
 
@@ -1391,13 +1241,6 @@ class _NetworksPageState extends State<_NetworksPage> {
         // the textual section label so it's the first thing the eye
         // lands on when opening the Networks tab.
         _BondGraphic(controller: c),
-        // Coaching banner: explains the Mac's single-Wi-Fi-radio constraint
-        // when relevant, e.g. the user is on an iPhone Hotspot via Wi-Fi
-        // and could pool more bandwidth by switching the iPhone to USB
-        // tether. Only renders when we have something actionable to say
-        // (not in the empty / loading state).
-        if (!everythingEmpty)
-          _PoolCoachBanner(services: allServices, inUseCount: inUse.length),
         _SectionLabel(
           icon: Icons.dns_rounded,
           title: 'Network pool',
@@ -1534,6 +1377,8 @@ class _DisconnectedServiceCard extends StatelessWidget {
     String name = service.displayName;
     IconData icon = _iconForKind(service.kind);
     String hint = _hintForKind(service.kind);
+    String badge = _badgeFor(service);
+    Color badgeColor = _badgeColorFor(service);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
@@ -1564,10 +1409,7 @@ class _DisconnectedServiceCard extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    const DispatchBadge(
-                      label: 'Disconnected',
-                      color: DispatchColors.muted,
-                    ),
+                    DispatchBadge(label: badge, color: badgeColor),
                   ],
                 ),
                 const SizedBox(height: 2),
@@ -1614,9 +1456,9 @@ class _DisconnectedServiceCard extends StatelessWidget {
       case NamedInterfaceKind.wifi:
         return 'Connect to Wi-Fi and Dispatch will start combining it.';
       case NamedInterfaceKind.cellularTether:
-        return 'Plug in your iPhone (USB) or enable Personal Hotspot — Dispatch will use it for cellular fallback automatically.';
+        return 'If the phone is plugged in, unlock it, tap Trust if prompted, then turn on Personal Hotspot.';
       case NamedInterfaceKind.bluetoothTether:
-        return 'Enable Bluetooth tethering and Dispatch will combine it the moment it connects.';
+        return 'Enable internet sharing or Personal Hotspot on the phone; Bluetooth alone is not enough.';
       case NamedInterfaceKind.ethernet:
         return 'Plug in this adapter and Dispatch will start combining it.';
       case NamedInterfaceKind.thunderbolt:
@@ -1628,109 +1470,26 @@ class _DisconnectedServiceCard extends StatelessWidget {
         return 'Saved network — Dispatch will use it when it becomes available.';
     }
   }
-}
 
-/// Short operational guidance for the active pool. This intentionally stays
-/// small: the main network cards show status, while this banner only calls out
-/// cases where the user can improve the pool with a physical connection.
-class _PoolCoachBanner extends StatelessWidget {
-  final List<KnownNetworkService> services;
-  final int inUseCount;
-
-  const _PoolCoachBanner({required this.services, required this.inUseCount});
-
-  @override
-  Widget build(BuildContext context) {
-    _PoolCoachMessage? msg = _message();
-    if (msg == null) return const SizedBox.shrink();
-    return Container(
-      margin: const EdgeInsets.fromLTRB(2, 8, 2, 4),
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-      decoration: BoxDecoration(
-        color: msg.color.withValues(alpha: 0.10),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: msg.color.withValues(alpha: 0.26)),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: <Widget>[
-          Icon(msg.icon, color: msg.color, size: 18),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              msg.text,
-              style: const TextStyle(
-                color: DispatchColors.ink,
-                fontSize: 12,
-                height: 1.35,
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
+  static String _badgeFor(KnownNetworkService service) {
+    if (service.disabled) return 'Off in macOS';
+    if (service.isCurrentlyAvailable &&
+        service.kind == NamedInterfaceKind.cellularTether) {
+      return 'No tether internet';
+    }
+    if (service.isCurrentlyAvailable &&
+        service.kind == NamedInterfaceKind.bluetoothTether) {
+      return 'No tether internet';
+    }
+    if (service.isCurrentlyAvailable) return 'No usable IP';
+    return 'Disconnected';
   }
 
-  _PoolCoachMessage? _message() {
-    if (inUseCount >= 2) {
-      return _PoolCoachMessage(
-        icon: Icons.hub_rounded,
-        color: DispatchColors.ok,
-        text:
-            'Multiple networks are in the pool. Keep the relay connected to verify real bonded throughput.',
-      );
-    }
-
-    bool hasWifi = false;
-    bool hasActiveCell = false;
-    bool hasSavedCell = false;
-    for (KnownNetworkService svc in services) {
-      if (!svc.isCurrentlyAvailable) {
-        if (svc.kind == NamedInterfaceKind.cellularTether ||
-            svc.kind == NamedInterfaceKind.bluetoothTether) {
-          hasSavedCell = true;
-        }
-        continue;
-      }
-      if (svc.kind == NamedInterfaceKind.wifi) hasWifi = true;
-      if (svc.kind == NamedInterfaceKind.cellularTether ||
-          svc.kind == NamedInterfaceKind.bluetoothTether) {
-        hasActiveCell = true;
-      }
-    }
-
-    if (hasWifi && !hasActiveCell) {
-      return _PoolCoachMessage(
-        icon: Icons.smartphone_rounded,
-        color: DispatchColors.warn,
-        text: hasSavedCell
-            ? 'Wi-Fi is the only active network. Plug in your phone tether to add cellular as a second uplink.'
-            : 'Wi-Fi is the only active network. Add iPhone USB, Ethernet, or another adapter to build a real pool.',
-      );
-    }
-    if (hasActiveCell && !hasWifi) {
-      return const _PoolCoachMessage(
-        icon: Icons.wifi_rounded,
-        color: DispatchColors.warn,
-        text:
-            'Cellular tether is the only active network. Join Wi-Fi or plug in Ethernet to add another uplink.',
-      );
-    }
-    return null;
+  static Color _badgeColorFor(KnownNetworkService service) {
+    if (service.disabled) return DispatchColors.muted;
+    if (service.isCurrentlyAvailable) return DispatchColors.warn;
+    return DispatchColors.muted;
   }
-}
-
-class _PoolCoachMessage {
-  final IconData icon;
-  final Color color;
-  final String text;
-
-  const _PoolCoachMessage({
-    required this.icon,
-    required this.color,
-    required this.text,
-  });
 }
 
 /// Section header row — icon + title + subtitle.
@@ -1927,6 +1686,7 @@ class _NetworkCardState extends State<_NetworkCard> {
                             supervisorStatus: supervisorStatus,
                             captiveState: captiveState,
                             interfacePresent: interfacePresent,
+                            kind: svc?.kind,
                           ),
                           style: const TextStyle(
                             fontSize: 12,
@@ -1989,6 +1749,7 @@ String _statusLineFor(
   LinkStatus? supervisorStatus,
   CaptivePortalProbeResult? captiveState,
   bool interfacePresent = true,
+  NamedInterfaceKind? kind,
 }) {
   if (link.priority == LinkPriority.never) {
     return 'Off — Dispatch isn\'t using this network';
@@ -1997,6 +1758,12 @@ String _statusLineFor(
     return 'Disconnected — will rejoin when reconnected';
   }
   if (captiveState == CaptivePortalProbeResult.captive) {
+    if (kind == NamedInterfaceKind.cellularTether) {
+      return 'Personal Hotspot needs attention — unlock iPhone and allow tethering';
+    }
+    if (kind == NamedInterfaceKind.bluetoothTether) {
+      return 'Bluetooth tether needs attention — enable internet sharing on the phone';
+    }
     return 'Sign-in required — opening a browser to this network will fix it';
   }
   // "connected to the access point but can't reach the open internet."
@@ -2005,6 +1772,16 @@ String _statusLineFor(
   // calling the link healthy. The captive probe's authoritative "no
   // internet" verdict overrides that here.
   if (captiveState == CaptivePortalProbeResult.error) {
+    if (kind == NamedInterfaceKind.cellularTether) {
+      return 'iPhone USB is connected, but Personal Hotspot is not offering internet';
+    }
+    if (kind == NamedInterfaceKind.bluetoothTether) {
+      return 'Bluetooth is connected, but the phone is not offering internet';
+    }
+    if (kind == NamedInterfaceKind.ethernet ||
+        kind == NamedInterfaceKind.thunderbolt) {
+      return 'Connected, but this adapter cannot reach the internet';
+    }
     return 'No internet — connected to Wi-Fi but can\'t reach the web';
   }
   switch (supervisorStatus) {
@@ -2031,7 +1808,12 @@ String _statusLineFor(
       return 'Off — Dispatch isn\'t using this network';
     case LinkStatus.unknown:
     case null:
-      if (m == null || m.rttMs == null) return 'Checking…';
+      if (m == null || m.rttMs == null) {
+        if (kind == NamedInterfaceKind.cellularTether) {
+          return 'Checking iPhone tether — Personal Hotspot must be on';
+        }
+        return 'Checking…';
+      }
       return 'Healthy, standing by';
   }
 }
@@ -2837,35 +2619,9 @@ class _SettingsDialog extends StatelessWidget {
             children: <Widget>[
               _SettingsLabel(
                 'Relay',
-                'Use a self-hosted relay for system-wide bonding and failover.',
+                'Arcane Dispatch always uses the SLC relay for bonding.',
               ),
-              TextFormField(
-                initialValue: policy.serverUrl ?? '',
-                decoration: const InputDecoration(
-                  isDense: true,
-                  border: OutlineInputBorder(),
-                  labelText: 'Endpoint',
-                  hintText: 'udp://relay.example.com:4430',
-                ),
-                onChanged: (String v) => controller.setRelayEndpoint(v),
-              ),
-              const SizedBox(height: 8),
-              TextFormField(
-                initialValue: policy.serverToken ?? '',
-                obscureText: true,
-                decoration: const InputDecoration(
-                  isDense: true,
-                  border: OutlineInputBorder(),
-                  labelText: 'Token',
-                ),
-                onChanged: (String v) => controller.setRelayToken(v),
-              ),
-              const SizedBox(height: 8),
-              OutlinedButton.icon(
-                onPressed: () => controller.useDefaultRelay(),
-                icon: const Icon(Icons.cloud_sync_outlined, size: 16),
-                label: const Text('Use SLC relay'),
-              ),
+              _RelaySummary(policy: policy),
               const SizedBox(height: 12),
               // Behaviour toggles that previously lived on the Mode tab.
               // They're advanced enough that most users won't touch them
@@ -2962,17 +2718,6 @@ class _SettingsDialog extends StatelessWidget {
               SwitchListTile.adaptive(
                 contentPadding: EdgeInsets.zero,
                 dense: true,
-                title: const Text('Connect on launch'),
-                subtitle: const Text(
-                  'Automatically taps the power button after the app starts.',
-                  style: TextStyle(fontSize: 11),
-                ),
-                value: settings.startProxyOnLaunch,
-                onChanged: (bool v) => controller.setStartProxyOnLaunch(v),
-              ),
-              SwitchListTile.adaptive(
-                contentPadding: EdgeInsets.zero,
-                dense: true,
                 title: const Text('Hide menu-bar window on click-away'),
                 subtitle: const Text(
                   'Recommended. Off keeps the panel pinned for debugging.',
@@ -2992,6 +2737,62 @@ class _SettingsDialog extends StatelessWidget {
           onPressed: () => Navigator.of(context).pop(),
         ),
       ],
+    );
+  }
+}
+
+class _RelaySummary extends StatelessWidget {
+  final Policy policy;
+
+  const _RelaySummary({required this.policy});
+
+  @override
+  Widget build(BuildContext context) {
+    String endpoint = policy.serverUrl ?? DispatchSettings.defaultRelayUrl;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      decoration: BoxDecoration(
+        color: DispatchColors.accent.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: DispatchColors.accent.withValues(alpha: 0.24),
+        ),
+      ),
+      child: Row(
+        children: <Widget>[
+          const Icon(
+            Icons.cloud_done_rounded,
+            size: 18,
+            color: DispatchColors.accent,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                const Text(
+                  'SLC relay locked in',
+                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  endpoint,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: DispatchColors.muted,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          DispatchBadge(
+            label: policy.bondedTransport ? 'Bonded' : 'Relay',
+            color: DispatchColors.accent,
+          ),
+        ],
+      ),
     );
   }
 }

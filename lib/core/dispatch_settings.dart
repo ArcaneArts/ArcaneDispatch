@@ -122,8 +122,7 @@ class DispatchSettings {
       listenPort: _coercePort(box.get('listen_port'), fallback: 1080),
       launchAtStartup:
           box.get('launch_at_startup', defaultValue: false) == true,
-      startProxyOnLaunch:
-          box.get('start_proxy_on_launch', defaultValue: false) == true,
+      startProxyOnLaunch: false,
       hideOnBlur: box.get('hide_on_blur', defaultValue: true) == true,
       transportKind: TransportKindCodec.parse(box.get(_transportKindKey)),
       links: links,
@@ -132,14 +131,15 @@ class DispatchSettings {
   }
 
   Future<void> save(Box box) async {
+    Policy relayPolicy = withDefaultRelay(policy, links: links);
     await box.put('listen_host', listenHost);
     await box.put('listen_port', listenPort);
     await box.put('launch_at_startup', launchAtStartup);
-    await box.put('start_proxy_on_launch', startProxyOnLaunch);
+    await box.put('start_proxy_on_launch', false);
     await box.put('hide_on_blur', hideOnBlur);
     await box.put(_transportKindKey, transportKind.wireName);
     await box.put(_linksKey, links.map((Link link) => link.encode()).toList());
-    await box.put(_policyKey, policy.encode());
+    await box.put(_policyKey, relayPolicy.encode());
     // Mirror to the legacy key so a downgrade keeps the user's picks.
     await box.put(_legacyTargetsKey, selectedTargets);
     await box.put(_schemaVersionKey, schemaVersion);
@@ -176,13 +176,21 @@ class DispatchSettings {
     if (raw is String && raw.isNotEmpty) {
       try {
         Policy stored = Policy.decode(raw);
-        // Re-sync links with the freshly-read list so the two never disagree.
-        return stored.copyWith(links: links);
+        return withDefaultRelay(stored, links: links);
       } catch (_) {
         // Fall through to default policy below.
       }
     }
-    return defaultPolicy.copyWith(links: links);
+    return withDefaultRelay(defaultPolicy, links: links);
+  }
+
+  static Policy withDefaultRelay(Policy policy, {List<Link>? links}) {
+    return policy.copyWith(
+      links: links ?? policy.links,
+      serverUrl: defaultRelayUrl,
+      serverToken: defaultRelayToken,
+      bondedTransport: true,
+    );
   }
 
   static List<String> _readLegacyTargets(Box box) {
